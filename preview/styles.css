@@ -314,3 +314,21 @@ select{font:inherit;color:var(--fg);background:var(--panel-2);border:1px solid v
 .place-alt .linkish{padding:2px 0;font-size:13px}
 
 .gps-warn{cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+
+/* ---------- live speed runs ---------- */
+.live-strip{position:absolute;z-index:695;left:12px;right:72px;top:calc(60px + var(--sat));display:flex;align-items:center;gap:10px;background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--bad);border-radius:var(--r);padding:10px 12px;backdrop-filter:blur(6px)}
+.app.is-demo .live-strip{top:calc(100px + var(--sat))}
+.live-strip b{font:700 16px/1.1 var(--f-display);letter-spacing:.03em;text-transform:uppercase}
+.lv-where{color:var(--muted);font-size:12px}
+.live-strip.watching{flex-direction:column;align-items:stretch;gap:6px;background:radial-gradient(120% 140% at 50% 0%,#3a1010 0%,color-mix(in srgb,var(--panel) 96%,transparent) 70%)}
+.lv-top{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.lv-top .lv-where{width:100%}
+.lv-gauge{display:flex;align-items:flex-end;justify-content:space-between}
+.lv-now{font:800 58px/0.9 var(--f-display);font-variant-numeric:tabular-nums}
+.lv-now small{font-size:18px;color:var(--muted);margin-left:4px}
+.lv-top-speed{text-align:right;color:var(--muted);font-size:12px}
+.lv-top-speed b{display:block;font:800 28px/1 var(--f-display);color:var(--accent)}
+.speed-live{margin-bottom:14px}
+.live-card{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--bad);border-radius:var(--r);padding:10px 12px;margin-bottom:8px}
+.mk-live{background:var(--bad);color:#fff;font:800 10px/1 var(--f-body);letter-spacing:.08em;border-radius:4px;padding:2px 4px;margin-right:5px;vertical-align:1px}
+.mk.watched .mk-pin{box-shadow:0 0 0 4px rgba(255,93,93,.55),0 4px 14px rgba(0,0,0,.5)}
