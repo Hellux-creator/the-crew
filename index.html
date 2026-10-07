@@ -142,8 +142,13 @@
 
   <!-- SHEET VIEWS -->
   <section id="view-convoy" class="view sheet" hidden>
-    <h2 class="h">Convoy</h2>
-    <div id="convoy-body"></div>
+    <h2 class="h">Meets &amp; Convoys</h2>
+    <div class="seg" role="tablist" aria-label="Meets or convoys">
+      <button id="seg-meets" role="tab" aria-selected="true">Meets</button>
+      <button id="seg-convoys" role="tab" aria-selected="false">Convoys</button>
+    </div>
+    <div id="meets-body"></div>
+    <div id="convoy-body" hidden></div>
   </section>
 
   <section id="view-garage" class="view sheet" hidden>
@@ -201,6 +206,22 @@
       <input id="in-me-phone" type="tel" maxlength="16">
       <button class="btn ghost sm" type="submit">Save</button>
     </form>
+    <h3 class="h3">Hide me at home</h3>
+    <div class="card stack" id="home-ghost">
+      <p class="fine" style="font-size:14px">Your pin disappears from the crew map whenever you're near home, so nobody can see where you live. Your home spot is saved only on this phone, never sent to anyone.</p>
+      <div class="grid2">
+        <div><label class="lbl" for="in-home-radius">Hide within</label>
+          <select id="in-home-radius"><option value="300">300 m</option><option value="500" selected>500 m</option><option value="1000">1 km</option><option value="2000">2 km</option></select></div>
+        <div style="justify-content:flex-end"><label class="check" style="margin-top:22px"><input type="checkbox" id="in-home-on"> Turned on</label></div>
+      </div>
+      <p class="fine" id="home-status">No home spot set yet.</p>
+      <div class="btn-row">
+        <button type="button" id="btn-home-here" class="btn primary sm">Use where I am now</button>
+        <button type="button" id="btn-home-pick" class="btn ghost sm">Pick on map</button>
+        <button type="button" id="btn-home-clear" class="btn danger sm" hidden>Clear</button>
+      </div>
+    </div>
+
     <div class="danger-row">
       <button id="btn-leave" class="btn danger sm">Leave crew</button>
       <button id="btn-signout" class="btn ghost sm">Sign out</button>
@@ -210,7 +231,7 @@
 
   <nav class="tabs" role="tablist">
     <button class="tab active" data-view="map" role="tab"><svg viewBox="0 0 24 24"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Zm0 0v14m6-12v14" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Map</button>
-    <button class="tab" data-view="convoy" role="tab"><svg viewBox="0 0 24 24"><path d="M4 17h2m12 0h2M3 13l2-5h10l3 5M3 13h18v4H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="7" cy="17" r="2" fill="currentColor"/><circle cx="17" cy="17" r="2" fill="currentColor"/></svg>Convoy</button>
+    <button class="tab" data-view="convoy" role="tab"><svg viewBox="0 0 24 24"><path d="M4 17h2m12 0h2M3 13l2-5h10l3 5M3 13h18v4H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="7" cy="17" r="2" fill="currentColor"/><circle cx="17" cy="17" r="2" fill="currentColor"/></svg>Meets</button>
     <button class="tab" data-view="garage" role="tab"><svg viewBox="0 0 24 24"><path d="M3 10 12 4l9 6v10H3z M7 20v-6h10v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Garage</button>
     <button class="tab" data-view="explore" role="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15.5 8.5-2 5-5 2 2-5z" fill="currentColor"/></svg>Explore</button>
     <button class="tab" data-view="speed" role="tab"><svg viewBox="0 0 24 24"><path d="M4 17a8 8 0 1 1 16 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="m12 17 4.5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.6" fill="currentColor"/></svg>Speed</button>
@@ -262,10 +283,15 @@
     <h3 class="h3">Start a convoy</h3>
     <label class="lbl" for="in-convoy-name">Convoy name</label>
     <input id="in-convoy-name" maxlength="40" placeholder="Sunday run to Hartbeespoort" required>
-    <label class="lbl" for="in-convoy-dest">Destination label</label>
+    <label class="lbl" for="in-convoy-search">Destination</label>
+    <div class="place-search">
+      <input id="in-convoy-search" type="search" placeholder="Search a place, e.g. Hartbeespoort Dam" autocomplete="off" enterkeyhint="search">
+      <div id="convoy-results" class="place-results" hidden></div>
+    </div>
+    <p class="fine place-picked" id="convoy-dest-coords">No destination set yet.</p>
+    <div class="place-alt"><button type="button" id="btn-convoy-pick" class="linkish">Drop a pin on the map instead</button></div>
+    <label class="lbl" for="in-convoy-dest">Destination name</label>
     <input id="in-convoy-dest" maxlength="40" placeholder="Dam wall lookout">
-    <p class="fine" id="convoy-dest-coords">No destination set yet.</p>
-    <button type="button" id="btn-convoy-pick" class="btn ghost sm">Pick destination on map</button>
     <div class="row-end">
       <button type="button" id="btn-convoy-cancel" class="btn ghost sm">Cancel</button>
       <button type="submit" class="btn primary sm">Start convoy</button>
@@ -324,6 +350,64 @@
       <button type="submit" class="btn primary sm">Save run</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="dlg-meet" class="dlg">
+  <form id="form-meet" method="dialog" class="stack">
+    <h3 class="h3" id="meet-dlg-title">Post a meet</h3>
+    <label class="lbl" for="in-meet-title">What's happening</label>
+    <input id="in-meet-title" maxlength="50" placeholder="Friday night meet" required>
+    <label class="lbl" for="in-meet-when">When</label>
+    <input id="in-meet-when" type="datetime-local" required>
+    <label class="lbl" for="in-meet-search">Where</label>
+    <div class="place-search">
+      <input id="in-meet-search" type="search" placeholder="Search a place, e.g. Menlyn Maine" autocomplete="off" enterkeyhint="search">
+      <div id="meet-results" class="place-results" hidden></div>
+    </div>
+    <p class="fine place-picked" id="meet-pin-text">No place picked yet.</p>
+    <div class="place-alt"><button type="button" id="btn-meet-here" class="linkish">Use my location</button><span>·</span><button type="button" id="btn-meet-pick" class="linkish">Drop a pin on the map</button></div>
+    <label class="lbl" for="in-meet-place">Place name (shown to the crew)</label>
+    <input id="in-meet-place" maxlength="50" placeholder="Menlyn Maine parking">
+    <label class="lbl" for="in-meet-notes">Details (optional)</label>
+    <textarea id="in-meet-notes" rows="3" maxlength="400" placeholder="All cars welcome. No burnouts, security is strict."></textarea>
+    <div class="row-end">
+      <button type="button" id="btn-meet-delete" class="btn danger sm" hidden>Cancel meet</button>
+      <span class="spacer"></span>
+      <button type="button" id="btn-meet-cancel" class="btn ghost sm">Close</button>
+      <button type="submit" class="btn primary sm">Post meet</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-meet-view" class="dlg">
+  <div id="meet-view-body"></div>
+  <div class="row-end"><span class="spacer"></span><button id="btn-meet-view-close" class="btn ghost sm">Close</button></div>
+</dialog>
+
+<dialog id="dlg-log" class="dlg">
+  <div id="log-body"></div>
+  <form id="form-log" class="stack log-form" hidden>
+    <h3 class="h3" style="margin-top:6px">Add to the log</h3>
+    <div class="grid2">
+      <div><label class="lbl" for="in-log-type">Type</label>
+        <select id="in-log-type"><option>Mod</option><option>Service</option><option>Repair</option><option>Parts</option></select></div>
+      <div><label class="lbl" for="in-log-date">Date</label><input id="in-log-date" type="date" required></div>
+    </div>
+    <label class="lbl" for="in-log-title">What was done</label>
+    <input id="in-log-title" maxlength="60" placeholder="Straight-through exhaust" required>
+    <div class="grid2">
+      <div><label class="lbl" for="in-log-cost">Cost (R)</label><input id="in-log-cost" inputmode="decimal" placeholder="4500"></div>
+      <div><label class="lbl" for="in-log-odo">Odometer (km)</label><input id="in-log-odo" inputmode="numeric" placeholder="212000"></div>
+    </div>
+    <div id="log-next-wrap" class="grid2" hidden>
+      <div><label class="lbl" for="in-log-next-date">Next service by</label><input id="in-log-next-date" type="date"></div>
+      <div><label class="lbl" for="in-log-next-km">or at (km)</label><input id="in-log-next-km" inputmode="numeric" placeholder="227000"></div>
+    </div>
+    <label class="lbl" for="in-log-notes">Notes (optional)</label>
+    <input id="in-log-notes" maxlength="120" placeholder="Done at Exhaust Masters, Silverton">
+    <div class="row-end"><span class="spacer"></span><button type="button" id="btn-log-form-cancel" class="btn ghost sm">Cancel</button><button type="submit" class="btn primary sm">Add</button></div>
+  </form>
+  <div class="row-end" id="log-actions"><button type="button" id="btn-log-add" class="btn primary sm">Add entry</button><span class="spacer"></span><button id="btn-log-close" class="btn ghost sm">Close</button></div>
 </dialog>
 
 <div id="toast" class="toast" role="status" hidden></div>

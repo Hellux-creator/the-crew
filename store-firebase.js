@@ -56,6 +56,13 @@ export async function createFirebaseStore(config) {
     leaveConvoy: (code, id, uid) => updateDoc(doc(db, "crews", code, "convoys", id), { memberIds: arrayRemove(uid) }),
     endConvoy: (code, id) => updateDoc(doc(db, "crews", code, "convoys", id), { active: false, endedAt: Date.now() }),
 
+    // meets & events (only ones that haven't long finished)
+    onMeets: (code, cb, err) => onSnapshot(query(collection(db, "crews", code, "meets"), where("when", ">", Date.now() - 6 * 3600000)), (s) => cb(list(s)), err),
+    async createMeet(code, data) { const r = await addDoc(collection(db, "crews", code, "meets"), data); return r.id; },
+    updateMeet: (code, id, data) => updateDoc(doc(db, "crews", code, "meets", id), data),
+    rsvpMeet: (code, id, uid, going) => updateDoc(doc(db, "crews", code, "meets", id), { going: going ? arrayUnion(uid) : arrayRemove(uid) }),
+    deleteMeet: (code, id) => deleteDoc(doc(db, "crews", code, "meets", id)),
+
     // leaderboards: coll is "bass" or "speed"
     onBoard: (code, coll, cb, err) => onSnapshot(collection(db, "crews", code, coll), (s) => cb(list(s)), err),
     async addBoard(code, coll, data) { const r = await addDoc(collection(db, "crews", code, coll), data); return r.id; },

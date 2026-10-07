@@ -23,8 +23,15 @@ export function createDemoStore() {
     thabo: { callsign: "Thabo", phone: "061 555 0104", car: { name: "Pocket Rocket", desc: "2018 Ford Fiesta ST200" }, ghost: true, lat: null, lng: null, updatedAt: now - 600000, stats: { cells: 520, km: 180 } },
   };
   const vehicles = {
-    me: [{ id: "v1", name: "Hellux", make: "Toyota", model: "Hilux single cab", year: "2007", colour: "White", engine: "V8", power: "", mods: ["Straight-through exhaust"], active: true, photo: "" }],
-    ruan: [{ id: "r1", name: "Golf 7 GTI", make: "VW", model: "Golf GTI Performance", year: "2016", colour: "Tornado Red", engine: "2.0 TSI", power: "169", mods: ["Stage 1 remap", "Cup 2 tyres"], active: true }],
+    me: [{ id: "v1", name: "Hellux", make: "Toyota", model: "Hilux single cab", year: "2007", colour: "White", engine: "V8", power: "", mods: ["Straight-through exhaust"], active: true, photo: "", log: [
+      { id: "l1", type: "Mod", date: "2026-08-14", title: "Straight-through exhaust", cost: 4500, odo: 208400, notes: "Exhaust Masters, Silverton" },
+      { id: "l2", type: "Service", date: "2026-09-02", title: "Major service + plugs", cost: 3850, odo: 210150, nextDate: "2027-03-02", nextKm: 220150, notes: "" },
+      { id: "l3", type: "Parts", date: "2026-09-20", title: "BF Goodrich KO2 tyres x4", cost: 14800, odo: 211300, notes: "" },
+    ] }],
+    ruan: [{ id: "r1", name: "Golf 7 GTI", make: "VW", model: "Golf GTI Performance", year: "2016", colour: "Tornado Red", engine: "2.0 TSI", power: "169", mods: ["Stage 1 remap", "Cup 2 tyres"], active: true, log: [
+      { id: "r1", type: "Mod", date: "2026-05-10", title: "Stage 1 remap", cost: 6500, odo: 131000, notes: "" },
+      { id: "r2", type: "Service", date: "2026-07-01", title: "DSG service", cost: 5200, odo: 136500, nextDate: "2026-10-15", nextKm: 141500, notes: "" },
+    ] }],
     lize: [{ id: "l1", name: "Rooi Gevaar", make: "VW", model: "Polo GTI", year: "2019", colour: "Red", engine: "2.0 TSI", power: "147", mods: ["Lowering springs"], active: true }],
     dewald: [{ id: "d1", name: "Big Grunt", make: "Ford", model: "Ranger Raptor", year: "2021", colour: "Grey", engine: "2.0 biturbo diesel", power: "157", mods: ["Rooftop tent", "Snorkel"], active: true }],
     thabo: [{ id: "t1", name: "Pocket Rocket", make: "Ford", model: "Fiesta ST200", year: "2018", colour: "Storm Grey", engine: "1.6 EcoBoost", power: "149", mods: ["Track pads"], active: true }],
@@ -45,9 +52,17 @@ export function createDemoStore() {
   ] };
 
   const media = new Map();
+  const at = (days, hh, mm) => { const t = new Date(); t.setDate(t.getDate() + days); t.setHours(hh, mm, 0, 0); return t.getTime(); };
+  let meets = [
+    { id: "m1", title: "Friday night meet", when: at(1, 19, 0), place: { lat: -25.7847, lng: 28.2770, label: "Menlyn Maine parking" }, notes: "All cars welcome. Bring the bass, security asks no burnouts.", hostId: "ruan", going: ["ruan", "lize"], createdAt: now - 5 * H },
+    { id: "m2", title: "Sunday breakfast run", when: at(3, 7, 30), place: { lat: -25.7247, lng: 27.8486, label: "Hartbeespoort dam wall" }, notes: "Meet at the Engen on the N4 at 07:00 and convoy out together.", hostId: "dewald", going: ["dewald", "thabo"], createdAt: now - 26 * H },
+    { id: "m3", title: "Zwartkops track day", when: at(9, 8, 0), place: { lat: -25.8106, lng: 28.1126, label: "Zwartkops Raceway" }, notes: "R1,200 per car, helmets required.", hostId: "thabo", going: ["thabo"], createdAt: now - 50 * H },
+  ];
   const explored = new Set();
   for (const r of [ROUTES.me, [P(-25.79, 28.23), P(-25.7479, 28.1876), P(-25.7461, 28.229)], [P(-25.8, 28.2), P(-25.7555, 28.2333), P(-25.7826, 28.2757)]])
     densify(r, 60).forEach((p) => explored.add(ghEncode(p.lat, p.lng)));
+  const meetSubs = new Set();
+  const emitMeets = () => { const l = meets.map((m) => ({ ...m, going: [...m.going] })); meetSubs.forEach((cb) => cb(l)); };
   const subs = { members: new Set(), convoys: new Set(), vehicles: new Map(), boards: { bass: new Set(), speed: new Set() } };
   const emitBoard = (c) => { const l = boards[c].map((b) => ({ ...b, witnesses: [...b.witnesses] })); subs.boards[c].forEach((cb) => cb(l)); };
   const emitMembers = () => { const l = Object.entries(members).map(([id, m]) => ({ id, ...m })); subs.members.forEach((cb) => cb(l)); };
@@ -90,6 +105,11 @@ export function createDemoStore() {
     witnessBoard: (_c, coll, id, u) => { const b = boards[coll].find((x) => x.id === id); if (b && !b.witnesses.includes(u)) b.witnesses.push(u); emitBoard(coll); return ok(); },
     deleteBoard: (_c, coll, id) => { boards[coll] = boards[coll].filter((x) => x.id !== id); emitBoard(coll); return ok(); },
     onVehicles: (u, cb) => { if (!subs.vehicles.has(u)) subs.vehicles.set(u, new Set()); subs.vehicles.get(u).add(cb); emitVehicles(u); return () => subs.vehicles.get(u).delete(cb); },
+    onMeets: (_c, cb) => { meetSubs.add(cb); emitMeets(); return () => meetSubs.delete(cb); },
+    createMeet: (_c, data) => { const id = "m" + Date.now(); meets.push({ id, ...data }); emitMeets(); return ok(id); },
+    updateMeet: (_c, id, data) => { const m = meets.find((x) => x.id === id); if (m) Object.assign(m, data); emitMeets(); return ok(); },
+    rsvpMeet: (_c, id, u, going) => { const m = meets.find((x) => x.id === id); if (m) m.going = going ? [...new Set([...m.going, u])] : m.going.filter((x) => x !== u); emitMeets(); return ok(); },
+    deleteMeet: (_c, id) => { meets = meets.filter((x) => x.id !== id); emitMeets(); return ok(); },
     saveMedia: (u, id, data) => { media.set(u + "/" + id, data); return ok(); },
     getMedia: (u, id) => ok(media.get(u + "/" + id) || null),
     deleteMedia: (u, id) => { media.delete(u + "/" + id); return ok(); },

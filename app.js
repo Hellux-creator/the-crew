@@ -12,7 +12,7 @@ const S = {
   boards: { bass: [], speed: [] }, boardClass: { bass: "All", speed: "All" },
   explored: new Set(), pendingCells: new Set(),
   pos: null, lastFix: null, lastSent: null, km: 0,
-  ghost: false, fog: false, mapTheme: "night", view: "map", pick: false, pendingDest: null,
+  ghost: false, fog: false, mapTheme: "night", meets: [], seg: "meets", homeHidden: false, view: "map", pick: false, pendingDest: null,
   map: null, markers: new Map(), meMarker: null, convoyLayer: null, fogLayer: null,
   unsubs: [], watchId: null, wakeLock: null, didFit: false,
 };
@@ -182,6 +182,7 @@ async function enterApp() {
   initMap();
   setFog(!!lsGet("fog", false));
   S.km = Number(lsGet(`km:${S.uid}`, 0)) || 0;
+  renderHome(); renderHomeCircle();
 
   await S.store.joinCrew(S.crew.id, S.uid, {
     callsign: S.profile.callsign, phone: S.profile.phone || "", ghost: S.ghost,
@@ -198,6 +199,11 @@ async function enterApp() {
     renderMembers(); renderConvoyOverlay(); renderActiveView();
     if (!S.didFit && !S.pos) { S.didFit = true; fitCrew(); }
   }, () => toast("Lost connection to the crew. Retrying…")));
+  S.unsubs.push(S.store.onMeets(S.crew.id, (list) => {
+    S.meets = list.sort((a, b) => a.when - b.when);
+    renderMeetPins();
+    if (S.view === "convoy") renderDrive();
+  }));
   S.unsubs.push(S.store.onConvoys(S.crew.id, (list) => {
     S.convoys = list.sort((a, b) => b.createdAt - a.createdAt);
     renderConvoyOverlay(); renderActiveView(); updateWakeLock();
@@ -231,12 +237,17 @@ function initMap() {
   S.fogLayer = new FogLayer();
   const hr = new Date().getHours();
   setMapTheme(lsGet("mapTheme", hr >= 18 || hr < 6 ? "night" : "day"));
+  S.meetLayer = L.layerGroup().addTo(S.map);
+  S.homeLayer = L.layerGroup().addTo(S.map);
   S.map.on("click", (e) => {
     if (!S.pick) return;
-    S.pendingDest = { lat: +e.latlng.lat.toFixed(6), lng: +e.latlng.lng.toFixed(6) };
+    const p = { lat: +e.latlng.lat.toFixed(6), lng: +e.latlng.lng.toFixed(6) };
+    const mode = S.pick;
     S.pick = false;
     $("#pick-banner").hidden = true;
-    openConvoyDialog(true);
+    if (mode === "meet") { meetDraft.place = p; openMeetDialog(true); }
+    else if (mode === "home") { setHome(p); setView("crew"); }
+    else { S.pendingDest = p; openConvoyDialog(true); }
   });
 }
 
@@ -454,7 +465,7 @@ function renderMembers() {
 
 function renderMe() {
   if (!S.pos) return;
-  const icon = L.divIcon({ className: "", html: `<div class="me-dot ${S.ghost ? "ghost" : ""}" style="transform:translate(-50%,-50%)"></div>`, iconSize: [0, 0] });
+  const icon = L.divIcon({ className: "", html: `<div class="me-dot ${S.ghost || S.homeHidden ? "ghost" : ""}" style="transform:translate(-50%,-50%)"></div>`, iconSize: [0, 0] });
   if (!S.meMarker) S.meMarker = L.marker([S.pos.lat, S.pos.lng], { icon, zIndexOffset: 1000, interactive: false }).addTo(S.map);
   else { S.meMarker.setLatLng([S.pos.lat, S.pos.lng]); S.meMarker.setIcon(icon); }
 }
@@ -508,12 +519,21 @@ function onFix(p) {
   renderMe();
   if (first) S.map.setView([fix.lat, fix.lng], 14);
   maybeSend();
-  if (S.view === "convoy") renderConvoy();
+  if (S.view === "convoy") renderDrive();
   renderConvoyOverlay();
 }
 
 function maybeSend(force = false) {
   if (!S.crew || !S.pos || S.ghost) return;
+  if (nearHome()) {
+    if (!S.homeHidden) {
+      S.homeHidden = true; S.lastSent = null;
+      S.store.updateMember(S.crew.id, S.uid, { ghost: true, lat: null, lng: null, speed: null, heading: null, updatedAt: Date.now() }).catch(() => { S.homeHidden = false; });
+      renderGhost();
+    }
+    return;
+  }
+  if (S.homeHidden) { S.homeHidden = false; force = true; renderGhost(); }
   const now = Date.now(), last = S.lastSent;
   const moved = last ? haversine(last, S.pos) : Infinity;
   if (!force && last && !((now - last.t > 4000 && moved > 20) || now - last.t > 45000)) return;
@@ -549,8 +569,8 @@ document.addEventListener("visibilitychange", () => {
 function renderGhost() {
   const b = $("#btn-ghost");
   b.setAttribute("aria-pressed", S.ghost);
-  $("#ghost-label").textContent = S.ghost ? "Ghost" : "Visible";
-  $("#live-dot").classList.toggle("on", !S.ghost);
+  $("#ghost-label").textContent = S.ghost ? "Ghost" : S.homeHidden ? "At home" : "Visible";
+  $("#live-dot").classList.toggle("on", !S.ghost && !S.homeHidden);
   renderMe();
 }
 $("#btn-ghost").addEventListener("click", async () => {
@@ -578,7 +598,7 @@ function setView(v) {
 }
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => setView(t.dataset.view)));
 function renderActiveView() {
-  if (S.view === "convoy") renderConvoy();
+  if (S.view === "convoy") renderDrive();
   else if (S.view === "garage") renderGarage();
   else if (S.view === "explore") renderExplore();
   else if (S.view === "speed" || S.view === "bass") { renderBoard(S.view); if (S.view === "speed") renderSession(); }
@@ -667,7 +687,7 @@ function renderConvoyOverlay() {
   const me = S.ghost ? null : S.pos;
   strip.replaceChildren(h("b", {}, c.name), h("div", { class: "meta" }, `${(c.memberIds || []).length} in convoy`, me ? ` · ${fmtKm(haversine(me, c.dest))} to ${c.dest.label || "destination"}` : ""));
   strip.hidden = false;
-  strip.onclick = () => setView("convoy");
+  strip.onclick = () => { setView("convoy"); setSeg("convoys"); };
 }
 function showConvoyOnMap(c) {
   const pts = [[c.dest.lat, c.dest.lng], ...(c.memberIds || []).map(posOf).filter(Boolean).map((p) => [p.lat, p.lng])];
@@ -686,21 +706,38 @@ async function updateWakeLock() {
 const dlgConvoy = $("#dlg-convoy");
 function openConvoyDialog(keep) {
   if (!keep) { $("#form-convoy").reset(); S.pendingDest = null; }
-  $("#convoy-dest-coords").textContent = S.pendingDest ? `Pinned at ${S.pendingDest.lat.toFixed(4)}, ${S.pendingDest.lng.toFixed(4)}` + (S.pos ? ` · ${fmtKm(haversine(S.pos, S.pendingDest))} from you` : "") : "No destination set yet.";
-  $("#btn-convoy-pick").textContent = S.pendingDest ? "Move the pin" : "Pick destination on map";
+  if (!keep) $("#in-convoy-search").value = "";
+  $("#convoy-results").hidden = true;
+  renderConvoyPicked();
   dlgConvoy.showModal();
 }
-$("#btn-convoy-pick").addEventListener("click", () => {
-  dlgConvoy.close();
+function renderConvoyPicked() {
+  const el = $("#convoy-dest-coords");
+  el.classList.toggle("ok", !!S.pendingDest);
+  el.textContent = S.pendingDest ? `✓ Destination set${$("#in-convoy-dest").value ? `: ${$("#in-convoy-dest").value}` : ""}` + (S.pos ? ` · ${fmtKm(haversine(S.pos, S.pendingDest))} from you` : "") : "No destination set yet.";
+}
+placeSearch($("#in-convoy-search"), $("#convoy-results"), (r) => { S.pendingDest = { lat: r.lat, lng: r.lng }; $("#in-convoy-dest").value = r.name.slice(0, 40); renderConvoyPicked(); });
+$("#in-convoy-dest").addEventListener("input", renderConvoyPicked);
+function startPick(mode, text) {
   setView("map");
-  S.pick = true;
+  S.pick = mode;
+  $("#pick-banner span").textContent = text;
   $("#pick-banner").hidden = false;
+}
+$("#btn-convoy-pick").addEventListener("click", () => { dlgConvoy.close(); startPick("convoy", "Tap the map to set the convoy destination"); });
+$("#btn-pick-cancel").addEventListener("click", () => {
+  const mode = S.pick;
+  S.pick = false; $("#pick-banner").hidden = true;
+  if (mode === "meet") openMeetDialog(true); else if (mode === "home") setView("crew"); else openConvoyDialog(true);
 });
-$("#btn-pick-cancel").addEventListener("click", () => { S.pick = false; $("#pick-banner").hidden = true; openConvoyDialog(true); });
 $("#btn-convoy-cancel").addEventListener("click", () => dlgConvoy.close());
 $("#form-convoy").addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (!S.pendingDest) { toast("Pick a destination on the map first."); return; }
+  const typedDest = $("#in-convoy-search").value.trim();
+  if (!S.pendingDest && typedDest.length >= 3) {
+    try { const [r] = await searchPlaces(typedDest); if (r) { S.pendingDest = { lat: r.lat, lng: r.lng }; if (!$("#in-convoy-dest").value) $("#in-convoy-dest").value = r.name.slice(0, 40); } } catch {}
+  }
+  if (!S.pendingDest) { renderConvoyPicked(); toast("Couldn't find that place. Pick one from the list, or drop a pin on the map."); return; }
   const name = $("#in-convoy-name").value.trim();
   if (!name) return;
   const cur = myConvoy();
@@ -711,8 +748,209 @@ $("#form-convoy").addEventListener("submit", async (e) => {
   });
   dlgConvoy.close();
   S.pendingDest = null;
-  toast("Convoy started. The crew can join from the Convoy tab.");
-  setView("convoy");
+  toast("Convoy started. The crew can join from the Meets tab.");
+  setView("convoy"); setSeg("convoys");
+});
+
+/* ---------------- place search ---------------- */
+// Free OpenStreetMap search (Nominatim), limited to South Africa and biased to where you are.
+let lastSearchAt = 0, searchCtl = null;
+async function searchPlaces(q) {
+  const wait = 1000 - (Date.now() - lastSearchAt); // their rule: at most one search a second
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  lastSearchAt = Date.now();
+  searchCtl?.abort();
+  searchCtl = new AbortController();
+  let url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&countrycodes=za&accept-language=en&q=${encodeURIComponent(q)}`;
+  if (S.pos) url += `&viewbox=${S.pos.lng - 1.5},${S.pos.lat + 1.5},${S.pos.lng + 1.5},${S.pos.lat - 1.5}`;
+  const res = await fetch(url, { signal: searchCtl.signal });
+  if (!res.ok) throw new Error("search");
+  return (await res.json()).map((r) => {
+    const parts = (r.display_name || "").split(",").map((s) => s.trim());
+    return { name: r.name || parts[0], sub: parts.slice(r.name ? 1 : 1, 4).join(", "), lat: +(+r.lat).toFixed(6), lng: +(+r.lon).toFixed(6) };
+  });
+}
+// Wires a search box to a results list. onPick({name, sub, lat, lng}) runs when a result is tapped.
+function placeSearch(input, list, onPick) {
+  let timer = null;
+  const show = (nodes) => { list.replaceChildren(...nodes); list.hidden = !nodes.length; };
+  const run = async () => {
+    const q = input.value.trim();
+    if (q.length < 3) { show([]); return; }
+    show([h("div", { class: "msg" }, "Searching…")]);
+    try {
+      const results = await searchPlaces(q);
+      if (input.value.trim() !== q) return;
+      show(results.length ? results.map((r) => h("button", { type: "button", onclick: () => { show([]); input.value = r.name; onPick(r); } },
+        h("b", {}, r.name), h("small", {}, [r.sub, S.pos ? fmtKm(haversine(S.pos, r)) + " away" : ""].filter(Boolean).join(" · "))))
+        : [h("div", { class: "msg" }, "No places found. Try adding the suburb or town, or drop a pin on the map.")]);
+    } catch (e) {
+      if (e.name !== "AbortError") show([h("div", { class: "msg" }, "Search isn't working right now. Drop a pin on the map instead.")]);
+    }
+  };
+  input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(run, 650); });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); clearTimeout(timer); run(); } });
+}
+
+/* ---------------- meets & events ---------------- */
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const fmtTime = (t) => new Date(t).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", hour12: false });
+function countdown(t) {
+  const s = (t - Date.now()) / 1000;
+  if (s < -3 * 3600) return "Finished";
+  if (s < 0) return "Happening now";
+  const d = Math.floor(s / 86400), hh = Math.floor((s % 86400) / 3600), mm = Math.floor((s % 3600) / 60);
+  return d ? `in ${d} d ${hh} h` : hh ? `in ${hh} h ${mm} min` : `in ${mm} min`;
+}
+function setSeg(seg) {
+  S.seg = seg;
+  $("#seg-meets").setAttribute("aria-selected", seg === "meets");
+  $("#seg-convoys").setAttribute("aria-selected", seg === "convoys");
+  $("#meets-body").hidden = seg !== "meets";
+  $("#convoy-body").hidden = seg !== "convoys";
+  renderDrive();
+}
+$("#seg-meets").addEventListener("click", () => setSeg("meets"));
+$("#seg-convoys").addEventListener("click", () => setSeg("convoys"));
+function renderDrive() { if (S.seg === "meets") renderMeets(); else renderConvoy(); }
+
+function goingRow(m) {
+  const ids = m.going || [];
+  return h("div", { class: "going" }, ...ids.slice(0, 6).map((id) => avatar(id, id === S.uid ? S.profile.callsign : S.members.get(id)?.callsign)),
+    h("span", {}, ids.length ? `${ids.length} going${ids.includes(S.uid) ? " · you're in" : ""}` : "Nobody yet"));
+}
+function renderMeets() {
+  const body = $("#meets-body");
+  const list = S.meets.filter((m) => m.when > Date.now() - 3 * 3600000);
+  body.replaceChildren(
+    h("button", { class: "btn primary wide", style: "margin-bottom:14px", onclick: () => openMeetDialog(false) }, "Post a meet"),
+    list.length ? h("div", { class: "meets" }, ...list.map((m) => {
+      const d = new Date(m.when), soon = m.when - Date.now() < 24 * 3600000;
+      return h("button", { class: `meet${soon ? " soon" : ""}`, onclick: () => openMeetView(m.id) },
+        h("div", { class: "cal" }, h("div", { class: "m" }, MONTHS[d.getMonth()]), h("div", { class: "d" }, String(d.getDate())), h("div", { class: "w" }, `${DAYS[d.getDay()]} ${fmtTime(m.when)}`)),
+        h("div", { class: "grow" }, h("div", { class: "t" }, m.title),
+          h("div", { class: "s" }, "📍 ", [m.place?.label || "Pinned on the map", S.pos && m.place ? fmtKm(haversine(S.pos, m.place)) + " away" : ""].filter(Boolean).join(" · ")),
+          h("span", { class: "countdown" }, countdown(m.when)), goingRow(m)));
+    })) : h("div", { class: "empty" }, h("div", { class: "big" }, "No meets planned"), h("p", {}, "Post one with a time and a pin. The crew can tap I'm in, and it shows on the map.")));
+}
+
+function renderMeetPins() {
+  if (!S.meetLayer) return;
+  S.meetLayer.clearLayers();
+  for (const m of S.meets) {
+    if (!m.place || m.when < Date.now() - 3 * 3600000) continue;
+    const d = new Date(m.when);
+    const html = `<div class="meet-pin"><div class="b">${esc(m.title)}<small>${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]} · ${fmtTime(m.when)} · ${(m.going || []).length} going</small></div><div class="tip"></div></div>`;
+    L.marker([m.place.lat, m.place.lng], { icon: L.divIcon({ className: "", html, iconSize: [0, 0] }), zIndexOffset: 300 })
+      .on("click", () => openMeetView(m.id)).addTo(S.meetLayer);
+  }
+}
+
+const dlgMeetView = $("#dlg-meet-view");
+$("#btn-meet-view-close").addEventListener("click", () => dlgMeetView.close());
+function openMeetView(id) {
+  const m = S.meets.find((x) => x.id === id);
+  if (!m) return;
+  const going = (m.going || []).includes(S.uid), host = m.hostId === S.uid, d = new Date(m.when);
+  const nav = m.place ? `${m.place.lat},${m.place.lng}` : "";
+  $("#meet-view-body").replaceChildren(
+    h("div", { class: "car-name", style: "font-size:28px" }, m.title),
+    h("div", { class: "s", style: "color:var(--muted);margin:6px 0" }, `${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]} at ${fmtTime(m.when)}`, m.place?.label ? ` · ${m.place.label}` : ""),
+    h("span", { class: "countdown" }, countdown(m.when)),
+    m.notes ? h("p", { style: "margin:12px 0;white-space:pre-wrap" }, m.notes) : null,
+    h("div", { class: "s", style: "color:var(--muted);margin-top:8px" }, `Posted by ${m.hostId === S.uid ? "you" : S.members.get(m.hostId)?.callsign || "a crew member"}`),
+    goingRow(m),
+    h("div", { class: "btn-row", style: "margin-top:14px" },
+      h("button", { class: `btn ${going ? "ghost" : "primary"} sm`, onclick: async () => { await S.store.rsvpMeet(S.crew.id, m.id, S.uid, !going); toast(going ? "You're out" : "You're in!"); dlgMeetView.close(); } }, going ? "Can't make it" : "I'm in"),
+      ...(nav ? [
+        h("button", { class: "btn ghost sm", onclick: () => { dlgMeetView.close(); setView("map"); S.map.flyTo([m.place.lat, m.place.lng], 15); } }, "Show on map"),
+        h("a", { class: "btn ghost sm", href: `https://www.google.com/maps/dir/?api=1&destination=${nav}`, target: "_blank", rel: "noopener" }, "Directions"),
+        h("button", { class: "btn ghost sm", onclick: () => { dlgMeetView.close(); S.pendingDest = { lat: m.place.lat, lng: m.place.lng }; openConvoyDialog(true); $("#in-convoy-name").value = `Convoy to ${m.title}`; $("#in-convoy-dest").value = m.place.label || ""; renderConvoyPicked(); } }, "Start a convoy there"),
+      ] : []),
+      ...(host ? [h("button", { class: "btn ghost sm", onclick: () => { dlgMeetView.close(); openMeetDialog(false, m); } }, "Edit")] : [])));
+  dlgMeetView.showModal();
+}
+
+const dlgMeet = $("#dlg-meet");
+let meetDraft = { place: null, editing: null };
+function openMeetDialog(keep, editMeet) {
+  if (!keep) {
+    $("#form-meet").reset();
+    meetDraft = { place: editMeet?.place ? { lat: editMeet.place.lat, lng: editMeet.place.lng } : null, editing: editMeet || null };
+    if (editMeet) {
+      $("#in-meet-title").value = editMeet.title;
+      const d = new Date(editMeet.when), pad = (n) => String(n).padStart(2, "0");
+      $("#in-meet-when").value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      $("#in-meet-place").value = editMeet.place?.label || "";
+      $("#in-meet-notes").value = editMeet.notes || "";
+    }
+  }
+  if (!keep && !editMeet) {
+    const t = new Date(); t.setMinutes(0, 0, 0); t.setHours(t.getHours() < 17 ? 18 : t.getHours() + 2);
+    const pad = (n) => String(n).padStart(2, "0");
+    $("#in-meet-when").value = `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}T${pad(t.getHours())}:00`;
+  }
+  $("#meet-dlg-title").textContent = meetDraft.editing ? "Edit meet" : "Post a meet";
+  $("#btn-meet-delete").hidden = !meetDraft.editing;
+  $("#form-meet button[type=submit]").textContent = meetDraft.editing ? "Save" : "Post meet";
+  renderMeetPicked();
+  $("#meet-results").hidden = true;
+  if (!keep) $("#in-meet-search").value = editMeet?.place?.label || "";
+  dlgMeet.showModal();
+}
+function renderMeetPicked() {
+  const el = $("#meet-pin-text");
+  el.classList.toggle("ok", !!meetDraft.place);
+  el.textContent = meetDraft.place ? `✓ Place set${$("#in-meet-place").value ? `: ${$("#in-meet-place").value}` : ""}` + (S.pos ? ` · ${fmtKm(haversine(S.pos, meetDraft.place))} from you` : "") : "No place picked yet.";
+}
+placeSearch($("#in-meet-search"), $("#meet-results"), (r) => { meetDraft.place = { lat: r.lat, lng: r.lng }; $("#in-meet-place").value = r.name.slice(0, 50); renderMeetPicked(); });
+$("#btn-meet-here").addEventListener("click", () => {
+  if (!S.pos) { toast("Waiting for GPS. Try again in a moment."); return; }
+  meetDraft.place = { lat: +S.pos.lat.toFixed(6), lng: +S.pos.lng.toFixed(6) };
+  if (!$("#in-meet-place").value) $("#in-meet-place").value = "Where I am now";
+  renderMeetPicked();
+});
+$("#in-meet-place").addEventListener("input", renderMeetPicked);
+$("#btn-meet-pick").addEventListener("click", () => { dlgMeet.close(); startPick("meet", "Tap the map where the meet is"); });
+$("#btn-meet-cancel").addEventListener("click", () => dlgMeet.close());
+$("#btn-meet-delete").addEventListener("click", async (e) => {
+  const b = e.currentTarget;
+  if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Tap again to cancel it"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Cancel meet"; }, 3000); return; }
+  b.dataset.armed = ""; b.textContent = "Cancel meet";
+  await S.store.deleteMeet(S.crew.id, meetDraft.editing.id);
+  dlgMeet.close();
+  toast("Meet cancelled");
+});
+$("#form-meet").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = $("#form-meet button[type=submit]");
+  const when = new Date($("#in-meet-when").value).getTime();
+  if (!when || isNaN(when)) { toast("Pick a date and time"); return; }
+  if (when < Date.now() - 15 * 60000) { toast("That time has already passed. Pick a time in the future."); return; }
+  // typed a place but never tapped a suggestion: use the best match
+  const typed = $("#in-meet-search").value.trim();
+  if (!meetDraft.place && typed.length >= 3) {
+    btn.disabled = true; btn.textContent = "Finding place…";
+    try {
+      const [r] = await searchPlaces(typed);
+      if (r) { meetDraft.place = { lat: r.lat, lng: r.lng }; if (!$("#in-meet-place").value) $("#in-meet-place").value = r.name.slice(0, 50); }
+    } catch {}
+    btn.disabled = false;
+  }
+  btn.textContent = meetDraft.editing ? "Save" : "Post meet";
+  if (!meetDraft.place) { renderMeetPicked(); toast("Couldn't find that place. Pick one from the list, or drop a pin on the map."); return; }
+  const data = { title: $("#in-meet-title").value.trim(), when, notes: $("#in-meet-notes").value.trim(), place: { ...meetDraft.place, label: $("#in-meet-place").value.trim() || typed } };
+  if (!data.title) return;
+  const editing = meetDraft.editing;
+  if (editing) await S.store.updateMeet(S.crew.id, editing.id, data);
+  else await S.store.createMeet(S.crew.id, { ...data, hostId: S.uid, going: [S.uid], createdAt: Date.now() });
+  dlgMeet.close();
+  meetDraft = { place: null, editing: null };
+  // show it where it landed
+  setView("map");
+  S.map.flyTo([data.place.lat, data.place.lng], 15, { duration: 0.8 });
+  toast(editing ? "Meet updated" : `Meet posted at ${data.place.label || "the pin"}`);
 });
 
 /* ---------------- 360° spin view ---------------- */
@@ -866,6 +1104,79 @@ async function capSize(dataUrl, maxChars = 900000) {
   return out;
 }
 
+/* ---------------- mod log ---------------- */
+const fmtR = (n) => "R" + Math.round(n || 0).toLocaleString("en-ZA");
+const fmtDate = (s) => { const d = new Date(s + "T12:00"); return isNaN(d) ? s : `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`; };
+// Next service due: the most recent service entry that set a date or km.
+function serviceDue(v) {
+  const s = [...(v.log || [])].filter((e) => e.type === "Service" && (e.nextDate || e.nextKm)).sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
+  if (!s) return null;
+  const lastOdo = Math.max(0, ...(v.log || []).map((e) => e.odo || 0));
+  const days = s.nextDate ? Math.round((new Date(s.nextDate + "T12:00") - Date.now()) / 86400000) : null;
+  const km = s.nextKm && lastOdo ? s.nextKm - lastOdo : null;
+  const parts = [];
+  if (days != null) parts.push(days < 0 ? `${-days} days overdue` : `in ${days} days`);
+  if (km != null) parts.push(km < 0 ? `${(-km).toLocaleString("en-ZA")} km over` : `or ${km.toLocaleString("en-ZA")} km`);
+  return { text: `Service due ${parts.join(" ")}`, warn: (days != null && days < 21) || (km != null && km < 1000) };
+}
+const dlgLog = $("#dlg-log");
+let logCtx = null; // {v, owner, editable}
+function openLog(v, owner, editable) {
+  logCtx = { v, owner, editable };
+  $("#form-log").hidden = true;
+  $("#log-actions").hidden = false;
+  $("#btn-log-add").hidden = !editable;
+  renderLog();
+  dlgLog.showModal();
+}
+function renderLog() {
+  const { v, editable } = logCtx;
+  const log = [...(v.log || [])].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const sum = (t) => log.filter((e) => !t || e.type === t).reduce((n, e) => n + (e.cost || 0), 0);
+  const due = serviceDue(v);
+  const stat = (val, k) => h("div", { class: "stat" }, h("div", { class: "v", style: "font-size:22px" }, val), h("div", { class: "k" }, k));
+  $("#log-body").replaceChildren(
+    h("div", { class: "car-name" }, `${v.name} · Mod log`),
+    h("div", { class: "s", style: "color:var(--muted)" }, [v.year, v.make, v.model].filter(Boolean).join(" ")),
+    h("div", { class: "log-sum" }, stat(fmtR(sum("Mod")), "On mods"), stat(fmtR(sum()), "All in"), stat(String(log.length), "Entries")),
+    due ? h("div", { class: `due${due.warn ? " warn" : ""}`, style: "margin-bottom:8px" }, due.text) : null,
+    log.length ? h("ul", { class: "log-list" }, ...log.map((e) => h("li", {},
+      h("span", { class: `log-type ${e.type}` }, e.type),
+      h("div", { class: "grow" },
+        h("div", { class: "n" }, e.title),
+        h("div", { class: "s" }, [fmtDate(e.date), e.odo ? `${Number(e.odo).toLocaleString("en-ZA")} km` : "", e.notes].filter(Boolean).join(" · ")),
+        e.type === "Service" && (e.nextDate || e.nextKm) ? h("div", { class: "s" }, `Next: ${[e.nextDate ? fmtDate(e.nextDate) : "", e.nextKm ? `${Number(e.nextKm).toLocaleString("en-ZA")} km` : ""].filter(Boolean).join(" or ")}`) : null,
+        editable ? h("button", { class: "log-del", onclick: async () => { const nv = { ...v, log: (v.log || []).filter((x) => x.id !== e.id) }; await S.store.saveVehicle(S.uid, nv); logCtx.v = nv; renderLog(); } }, "Remove") : null),
+      h("div", { class: "num" }, e.cost ? fmtR(e.cost) : "")))) : h("div", { class: "empty" }, h("div", { class: "big" }, "Nothing logged yet"), h("p", {}, editable ? "Add mods, services and repairs to keep a full history of the build." : "No entries yet.")));
+}
+$("#btn-log-close").addEventListener("click", () => dlgLog.close());
+$("#btn-log-add").addEventListener("click", () => {
+  $("#form-log").reset();
+  $("#in-log-date").value = new Date().toISOString().slice(0, 10);
+  $("#log-next-wrap").hidden = true;
+  $("#form-log").hidden = false;
+  $("#log-actions").hidden = true;
+  $("#in-log-title").focus();
+});
+$("#in-log-type").addEventListener("change", (e) => { $("#log-next-wrap").hidden = e.target.value !== "Service"; });
+$("#btn-log-form-cancel").addEventListener("click", () => { $("#form-log").hidden = true; $("#log-actions").hidden = false; });
+$("#form-log").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const num = (sel) => { const n = parseFloat($(sel).value.replace(/[^\d.]/g, "")); return isFinite(n) ? n : null; };
+  const entry = {
+    id: `l${Date.now().toString(36)}`, type: $("#in-log-type").value, date: $("#in-log-date").value, title: $("#in-log-title").value.trim(),
+    cost: num("#in-log-cost"), odo: num("#in-log-odo"), notes: $("#in-log-notes").value.trim(),
+    ...($("#in-log-type").value === "Service" ? { nextDate: $("#in-log-next-date").value || null, nextKm: num("#in-log-next-km") } : {}),
+  };
+  if (!entry.title) return;
+  const nv = { ...logCtx.v, log: [...(logCtx.v.log || []), entry].slice(-200) };
+  await S.store.saveVehicle(S.uid, nv);
+  logCtx.v = nv;
+  $("#form-log").hidden = true; $("#log-actions").hidden = false;
+  renderLog();
+  toast("Added to the log");
+});
+
 /* ---------------- garage ---------------- */
 function carCard(v, onclick, owner = S.uid) {
   const photo = v.spinId ? spinViewer({ uid: owner, spinId: v.spinId, count: v.spinCount, thumb: v.spinThumb }, v.name)
@@ -880,7 +1191,9 @@ function carCard(v, onclick, owner = S.uid) {
       h("div", { class: "car-name" }, v.name, v.active ? h("span", { class: "badge" }, "Driving") : null),
       spec ? h("div", { class: "car-spec" }, spec) : null,
       extra ? h("div", { class: "car-spec" }, extra) : null,
-      v.mods?.length ? h("div", { class: "mods" }, v.mods.map((m) => h("span", {}, m))) : null));
+      v.mods?.length ? h("div", { class: "mods" }, v.mods.map((m) => h("span", {}, m))) : null,
+      ...(() => { const due = owner === S.uid ? serviceDue(v) : null; return due ? [h("div", { class: `due${due.warn ? " warn" : ""}` }, due.text)] : []; })(),
+      h("button", { class: "btn ghost sm log-btn", onclick: (e) => { e.stopPropagation(); openLog(v, owner, owner === S.uid); } }, `Mod log${v.log?.length ? ` (${v.log.length})` : ""}`)));
 }
 function renderGarage() {
   const list = $("#garage-list");
@@ -986,7 +1299,7 @@ $("#form-car").addEventListener("submit", async (e) => {
     name: $("#in-car-name").value.trim(), make: $("#in-car-make").value.trim(), model: $("#in-car-model").value.trim(),
     year: $("#in-car-year").value.trim(), colour: $("#in-car-colour").value.trim(), engine: $("#in-car-engine").value.trim(),
     power: $("#in-car-power").value.trim(), mods: $("#in-car-mods").value.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 20),
-    active: $("#in-car-active").checked, photo: photoData,
+    active: $("#in-car-active").checked, photo: photoData, log: editing?.log || [],
   };
   if (!v.name) return;
   const saveBtn = $("#form-car button[type=submit]");
@@ -1289,8 +1602,41 @@ function renderSession() {
     h("button", { class: "btn danger wide", onclick: endSession }, "End session and save"));
 }
 
+/* ---------------- hide me at home ---------------- */
+// The home spot lives only in this phone's storage. It is never sent to the database.
+let home = lsGet("homeGhost", null); // {lat, lng, radius, on}
+const nearHome = () => !!(home?.on && S.pos && haversine(S.pos, home) <= home.radius);
+function setHome(p) {
+  home = { lat: p.lat, lng: p.lng, radius: Number($("#in-home-radius").value) || 500, on: true };
+  lsSet("homeGhost", home);
+  renderHome(); renderHomeCircle(); maybeSend(true);
+  toast("Home spot saved on this phone");
+}
+function renderHome() {
+  $("#in-home-on").checked = !!home?.on;
+  $("#in-home-on").disabled = !home;
+  if (home) $("#in-home-radius").value = String(home.radius);
+  $("#btn-home-clear").hidden = !home;
+  $("#home-status").textContent = !home ? "No home spot set yet."
+    : !home.on ? "Home spot saved, but hiding is switched off."
+    : nearHome() ? "You're near home right now, so you're hidden from the crew."
+    : `On. You'll vanish from the map within ${home.radius >= 1000 ? home.radius / 1000 + " km" : home.radius + " m"} of home.`;
+}
+function renderHomeCircle() {
+  if (!S.homeLayer) return;
+  S.homeLayer.clearLayers();
+  if (!home?.on) return;
+  L.circle([home.lat, home.lng], { radius: home.radius, color: "#8b7cf0", weight: 3, opacity: 0.95, dashArray: "8 6", fillColor: "#8b7cf0", fillOpacity: 0.14, interactive: false }).addTo(S.homeLayer);
+}
+$("#btn-home-here").addEventListener("click", () => { if (!S.pos) { toast("Waiting for GPS. Try again in a moment."); return; } setHome(S.pos); });
+$("#btn-home-pick").addEventListener("click", () => startPick("home", "Tap the map on your home"));
+$("#btn-home-clear").addEventListener("click", () => { home = null; lsSet("homeGhost", null); renderHome(); renderHomeCircle(); maybeSend(true); toast("Home spot cleared"); });
+$("#in-home-on").addEventListener("change", (e) => { if (!home) return; home.on = e.target.checked; lsSet("homeGhost", home); renderHome(); renderHomeCircle(); maybeSend(true); });
+$("#in-home-radius").addEventListener("change", (e) => { if (!home) return; home.radius = Number(e.target.value); lsSet("homeGhost", home); renderHome(); renderHomeCircle(); maybeSend(true); });
+
 /* ---------------- crew ---------------- */
 function renderCrew() {
+  renderHome();
   const ul = $("#crew-list");
   const list = [...S.members.values()].sort((a, b) => (a.id === S.uid ? -1 : b.id === S.uid ? 1 : (b.updatedAt || 0) - (a.updatedAt || 0)));
   ul.replaceChildren(...list.map((m) => {
@@ -1367,6 +1713,6 @@ async function openMember(id) {
 }
 
 // refresh "x min ago" labels and stale markers
-setInterval(() => { if (S.crew) { renderMembers(); if (S.view === "crew") renderCrew(); } }, 30000);
+setInterval(() => { if (S.crew) { renderMeetPins(); if (S.view === "convoy" && S.seg === "meets") renderMeets(); renderMembers(); if (S.view === "crew") renderCrew(); } }, 30000);
 
 boot();
