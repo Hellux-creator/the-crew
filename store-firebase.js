@@ -66,5 +66,16 @@ export async function createFirebaseStore(config) {
     async getVehicles(uid) { return list(await getDocs(collection(db, "users", uid, "vehicles"))); },
     saveVehicle: (uid, v) => { const { id, ...rest } = v; return setDoc(doc(db, "users", uid, "vehicles", id), rest); },
     deleteVehicle: (uid, id) => deleteDoc(doc(db, "users", uid, "vehicles", id)),
+
+    // drive-to-reveal map: roads you've driven, stored privately per person
+    async loadExplored(uid) {
+      const out = new Set();
+      for (const d of (await getDocs(collection(db, "users", uid, "explored"))).docs) (d.data().cells || []).forEach((c) => out.add(c));
+      return out;
+    },
+    async addExplored(uid, byPrefix) {
+      await Promise.all(Object.entries(byPrefix).map(([p, cells]) =>
+        setDoc(doc(db, "users", uid, "explored", p), { cells: arrayUnion(...cells) }, { merge: true })));
+    },
   };
 }

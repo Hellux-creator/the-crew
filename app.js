@@ -1,5 +1,5 @@
 import { firebaseConfig } from "./firebase-config.js";
-import { haversine, fmtKm, fmtAgo } from "./geo.js";
+import { haversine, ghEncode, ghBounds, cellAreaKm2, fmtKm, fmtAgo, CELL_PREC, PREFIX_PREC } from "./geo.js";
 
 const $ = (s) => document.querySelector(s);
 const DEMO = !firebaseConfig.apiKey || firebaseConfig.apiKey.startsWith("PASTE");
@@ -10,9 +10,10 @@ const S = {
   store: null, uid: null, profile: null, crew: null,
   members: new Map(), convoys: [], myVehicles: [],
   boards: { bass: [], speed: [] }, boardClass: { bass: "All", speed: "All" },
+  explored: new Set(), pendingCells: new Set(),
   pos: null, lastSent: null,
-  ghost: false, view: "map", pick: false, pendingDest: null,
-  map: null, markers: new Map(), meMarker: null, convoyLayer: null,
+  ghost: false, fog: false, view: "map", pick: false, pendingDest: null,
+  map: null, markers: new Map(), meMarker: null, convoyLayer: null, fogLayer: null,
   unsubs: [], watchId: null, wakeLock: null, didFit: false,
 };
 
@@ -179,6 +180,7 @@ async function enterApp() {
   S.ghost = !!lsGet("ghost", false);
   renderGhost();
   initMap();
+  setFog(!!lsGet("fog", false));
 
   await S.store.joinCrew(S.crew.id, S.uid, {
     callsign: S.profile.callsign, phone: S.profile.phone || "", ghost: S.ghost,
@@ -199,6 +201,8 @@ async function enterApp() {
     S.convoys = list.sort((a, b) => b.createdAt - a.createdAt);
     renderConvoyOverlay(); renderActiveView(); updateWakeLock();
   }));
+  S.explored = await S.store.loadExplored(S.uid).catch(() => new Set());
+  if (S.fog) S.fogLayer.redraw();
   for (const key of Object.keys(BOARDS)) S.unsubs.push(S.store.onBoard(S.crew.id, BOARDS[key].coll, (list) => {
     S.boards[key] = list;
     if (S.view === key) renderBoard(key);
@@ -221,7 +225,9 @@ function initMap() {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   }).addTo(S.map);
+  S.map.createPane("fog").style.zIndex = 350;
   S.convoyLayer = L.layerGroup().addTo(S.map);
+  S.fogLayer = new FogLayer();
   S.map.on("click", (e) => {
     if (!S.pick) return;
     S.pendingDest = { lat: +e.latlng.lat.toFixed(6), lng: +e.latlng.lng.toFixed(6) };
@@ -230,6 +236,71 @@ function initMap() {
     openConvoyDialog(true);
   });
 }
+
+const FogLayer = L.Layer.extend({
+  onAdd(map) {
+    this._map = map;
+    this._c = L.DomUtil.create("canvas", "fog-canvas", map.getPane("fog"));
+    this._c.style.pointerEvents = "none";
+    map.on("move zoom resize viewreset", this._draw, this);
+    this._draw();
+  },
+  onRemove(map) { map.off("move zoom resize viewreset", this._draw, this); this._c.remove(); },
+  redraw() { if (this._map) this._draw(); },
+  _draw() {
+    const map = this._map, c = this._c, size = map.getSize(), dpr = window.devicePixelRatio || 1;
+    L.DomUtil.setPosition(c, map.containerPointToLayerPoint([0, 0]));
+    c.width = size.x * dpr; c.height = size.y * dpr;
+    c.style.width = size.x + "px"; c.style.height = size.y + "px";
+    const ctx = c.getContext("2d");
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = "rgba(4,6,10,0.9)";
+    ctx.fillRect(0, 0, size.x, size.y);
+    const vb = map.getBounds().pad(0.05);
+    const pad = map.getZoom() >= 14 ? 3 : 4;
+    const rects = [];
+    for (const gh of S.explored) {
+      const b = ghBounds(gh);
+      if (b.n < vb.getSouth() || b.s > vb.getNorth() || b.e < vb.getWest() || b.w > vb.getEast()) continue;
+      const p1 = map.latLngToContainerPoint([b.n, b.w]), p2 = map.latLngToContainerPoint([b.s, b.e]);
+      rects.push([p1.x - pad / 2, p1.y - pad / 2, Math.max(5, p2.x - p1.x + pad), Math.max(5, p2.y - p1.y + pad)]);
+    }
+    // punch the driven squares out of the fog...
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.fillStyle = "#000";
+    for (const r of rects) ctx.fillRect(...r);
+    // ...then give them a faint amber glow so they read as "yours"
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "rgba(255,176,32,0.14)";
+    for (const r of rects) ctx.fillRect(...r);
+  },
+});
+
+function setFog(on) {
+  S.fog = on;
+  lsSet("fog", on);
+  $("#btn-fog").setAttribute("aria-pressed", on);
+  if (on && !S.map.hasLayer(S.fogLayer)) S.fogLayer.addTo(S.map);
+  if (!on && S.map.hasLayer(S.fogLayer)) S.map.removeLayer(S.fogLayer);
+  renderFogStat();
+}
+function renderFogStat() {
+  const el = $("#fog-stat");
+  el.hidden = !S.fog;
+  if (!S.fog) return;
+  const area = S.explored.size * cellAreaKm2(S.pos?.lat ?? -26);
+  el.textContent = S.explored.size
+    ? `${area < 10 ? area.toFixed(1) : Math.round(area).toLocaleString("en-ZA")} km² revealed`
+    : "Drive anywhere to start revealing your map";
+}
+$("#btn-fog").addEventListener("click", () => {
+  setFog(!S.fog);
+  if (S.fog && S.explored.size) {
+    let s = 90, n = -90, w = 180, e = -180;
+    for (const g of S.explored) { const b = ghBounds(g); s = Math.min(s, b.s); n = Math.max(n, b.n); w = Math.min(w, b.w); e = Math.max(e, b.e); }
+    S.map.flyToBounds([[s, w], [n, e]], { padding: [40, 40], maxZoom: 14, duration: 0.8 });
+  }
+});
 
 $("#btn-locate").addEventListener("click", () => {
   if (S.pos) S.map.flyTo([S.pos.lat, S.pos.lng], Math.max(S.map.getZoom(), 15), { duration: 0.6 });
@@ -312,6 +383,10 @@ function onFix(p) {
   }
   S.pos = fix;
   speedFeed(fix, rawSpeed);
+  if (fix.acc < 50) {
+    const cell = ghEncode(fix.lat, fix.lng, CELL_PREC);
+    if (!S.explored.has(cell)) { S.explored.add(cell); S.pendingCells.add(cell); if (S.fog) { S.fogLayer.redraw(); renderFogStat(); } }
+  }
   renderMe();
   if (first) S.map.setView([fix.lat, fix.lng], 14);
   maybeSend();
@@ -332,8 +407,19 @@ function maybeSend(force = false) {
   }).catch(() => { S.lastSent = null; });
 }
 
+async function flushExplored() {
+  if (!S.crew || !S.pendingCells.size) return;
+  const by = {};
+  for (const c of S.pendingCells) (by[c.slice(0, PREFIX_PREC)] ||= []).push(c);
+  const sent = new Set(S.pendingCells);
+  S.pendingCells.clear();
+  try { await S.store.addExplored(S.uid, by); }
+  catch { sent.forEach((c) => S.pendingCells.add(c)); }
+}
+setInterval(flushExplored, 30000);
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) { maybeSend(true); updateWakeLock(); }
+  if (document.hidden) flushExplored();
+  else { maybeSend(true); updateWakeLock(); }
 });
 
 /* ---------------- ghost ---------------- */
@@ -866,7 +952,7 @@ $("#btn-leave").addEventListener("click", async (e) => {
   b.dataset.armed = ""; b.textContent = "Leave crew";
   route();
 });
-$("#btn-signout").addEventListener("click", () => { teardown(); S.store.signOut(); });
+$("#btn-signout").addEventListener("click", async () => { await flushExplored(); teardown(); S.store.signOut(); });
 
 // member sheet
 const dlgMember = $("#dlg-member");

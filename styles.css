@@ -234,3 +234,7 @@ select{font:inherit;color:var(--fg);background:var(--panel-2);border:1px solid v
 .gauge .meta{display:flex;justify-content:center;gap:18px;color:var(--muted);font-size:13px;margin-top:6px}
 .gauge .meta b{display:block;font:800 26px/1 var(--f-display);color:var(--accent);font-variant-numeric:tabular-nums}
 .recdot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--bad);margin-right:6px;animation:pulse 1.4s infinite}
+
+/* ---------- drive to reveal ---------- */
+.fog-stat{position:absolute;z-index:700;left:12px;top:calc(60px + var(--sat));background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--accent);color:var(--accent);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600;backdrop-filter:blur(6px)}
+.app.is-demo .fog-stat{top:calc(100px + var(--sat))}
