@@ -11,7 +11,7 @@ const S = {
   members: new Map(), convoys: [], myVehicles: [],
   boards: { bass: [], speed: [] }, boardClass: { bass: "All", speed: "All" },
   explored: new Set(), pendingCells: new Set(),
-  pos: null, lastSent: null,
+  pos: null, lastFix: null, lastSent: null, km: 0,
   ghost: false, fog: false, view: "map", pick: false, pendingDest: null,
   map: null, markers: new Map(), meMarker: null, convoyLayer: null, fogLayer: null,
   unsubs: [], watchId: null, wakeLock: null, didFit: false,
@@ -181,6 +181,7 @@ async function enterApp() {
   renderGhost();
   initMap();
   setFog(!!lsGet("fog", false));
+  S.km = Number(lsGet(`km:${S.uid}`, 0)) || 0;
 
   await S.store.joinCrew(S.crew.id, S.uid, {
     callsign: S.profile.callsign, phone: S.profile.phone || "", ghost: S.ghost,
@@ -377,6 +378,12 @@ function onFix(p) {
   const fix = { lat: c.latitude, lng: c.longitude, acc: c.accuracy, speed: c.speed ?? null, heading: c.heading ?? null, t: p.timestamp || Date.now() };
   const rawSpeed = fix.speed;
   const first = !S.pos;
+  // distance driven: only trust clean fixes, ignore jitter and teleports
+  if (S.lastFix && fix.acc < 30) {
+    const d = haversine(S.lastFix, fix), dt = (fix.t - S.lastFix.t) / 1000;
+    if (d > 8 && d < 3000 && dt > 0 && d / dt < 70) S.km += d / 1000;
+  }
+  if (fix.acc < 40) S.lastFix = fix;
   if (fix.speed == null && S.pos) {
     const dt = (fix.t - S.pos.t) / 1000;
     if (dt > 0) fix.speed = haversine(S.pos, fix) / dt;
@@ -408,7 +415,12 @@ function maybeSend(force = false) {
 }
 
 async function flushExplored() {
-  if (!S.crew || !S.pendingCells.size) return;
+  if (!S.crew) return;
+  lsSet(`km:${S.uid}`, S.km);
+  const me = S.members.get(S.uid);
+  const cells = S.explored.size, km = Math.round(S.km);
+  if (me && (me.stats?.cells !== cells || me.stats?.km !== km)) S.store.updateMember(S.crew.id, S.uid, { stats: { cells, km } }).catch(() => {});
+  if (!S.pendingCells.size) return;
   const by = {};
   for (const c of S.pendingCells) (by[c.slice(0, PREFIX_PREC)] ||= []).push(c);
   const sent = new Set(S.pendingCells);
@@ -446,10 +458,10 @@ $("#btn-ghost").addEventListener("click", async () => {
 
 /* ---------------- views ---------------- */
 function setView(v) {
-  if (!["map", "convoy", "garage", "speed", "bass", "crew"].includes(v)) v = "map";
+  if (!["map", "convoy", "garage", "explore", "speed", "bass", "crew"].includes(v)) v = "map";
   S.view = v; lsSet("view", v);
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === v));
-  for (const id of ["convoy", "garage", "speed", "bass", "crew"]) $(`#view-${id}`).hidden = id !== v;
+  for (const id of ["convoy", "garage", "explore", "speed", "bass", "crew"]) $(`#view-${id}`).hidden = id !== v;
   if (v === "map") setTimeout(() => S.map.invalidateSize(), 30);
   renderActiveView();
 }
@@ -457,6 +469,7 @@ document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () 
 function renderActiveView() {
   if (S.view === "convoy") renderConvoy();
   else if (S.view === "garage") renderGarage();
+  else if (S.view === "explore") renderExplore();
   else if (S.view === "speed" || S.view === "bass") { renderBoard(S.view); if (S.view === "speed") renderSession(); }
   else if (S.view === "crew") renderCrew();
 }
@@ -688,6 +701,43 @@ function syncActiveCar() {
   const cur = S.members.get(S.uid)?.car || null;
   if (JSON.stringify(cur) !== JSON.stringify(car)) S.store.updateMember(S.crew.id, S.uid, { car }).catch(() => {});
 }
+
+/* ---------------- explore ---------------- */
+function renderExplore() {
+  const area = (cells) => cells * cellAreaKm2(S.pos?.lat ?? -26);
+  const fmtArea = (v) => (v < 10 ? v.toFixed(1) : Math.round(v).toLocaleString("en-ZA"));
+  const stat = (v, k) => h("div", { class: "stat" }, h("div", { class: "v" }, v), h("div", { class: "k" }, k));
+  $("#explore-stats").replaceChildren(
+    stat(fmtArea(area(S.explored.size)), "km² revealed"),
+    stat(S.explored.size.toLocaleString("en-ZA"), "Road tiles"),
+    stat(Math.round(S.km).toLocaleString("en-ZA"), "km driven"));
+  const rows = [...S.members.values()].map((m) => {
+    const me = m.id === S.uid;
+    return { id: m.id, cells: me ? S.explored.size : m.stats?.cells || 0, km: me ? Math.round(S.km) : m.stats?.km || 0 };
+  }).filter((r) => r.cells > 0).sort((a, b) => b.cells - a.cells);
+
+  const podium = $("#explore-podium");
+  if (!rows.length) {
+    podium.replaceChildren(h("div", { class: "empty" }, h("div", { class: "big" }, "Nobody's explored yet"), h("p", {}, "Drive with THE CREW open and the roads you cover count toward the board.")));
+  } else {
+    const spot = (r, i) => r ? h("div", { class: `pod p${i + 1}` },
+      h("div", { class: `medal ${MEDALS[i]}`, "aria-label": `${["1st", "2nd", "3rd"][i]} place` }, String(i + 1)),
+      avatar(r.id, boardName(r.id)),
+      h("div", { class: "pod-name" }, boardName(r.id)),
+      h("span", { class: "pod-val" }, fmtArea(area(r.cells)), h("small", {}, "km²")),
+      h("div", { class: "pod-car" }, `${r.km.toLocaleString("en-ZA")} km driven`),
+      h("div", { class: "plinth" }, h("span", {}, String(i + 1)))) : h("div", { class: `pod p${i + 1} vacant` }, h("div", { class: "plinth" }, h("span", {}, String(i + 1))));
+    podium.replaceChildren(h("div", { class: "podium" }, spot(rows[1], 1), spot(rows[0], 0), spot(rows[2], 2)));
+  }
+  const rest = rows.slice(3);
+  $("#explore-rest-h").hidden = !rest.length;
+  const ol = $("#explore-board");
+  ol.style.counterReset = "b 3";
+  ol.replaceChildren(...rest.map((r) => h("li", {}, avatar(r.id, boardName(r.id)),
+    h("div", { class: "grow" }, h("div", { class: "n" }, boardName(r.id)), h("div", { class: "s" }, `${r.km.toLocaleString("en-ZA")} km driven`)),
+    h("div", { class: "num" }, h("span", { class: "dbv" }, fmtArea(area(r.cells)), h("small", {}, "km²"))))));
+}
+$("#btn-showfog").addEventListener("click", () => { setView("map"); if (!S.fog) $("#btn-fog").click(); });
 
 /* ---------------- leaderboards (bass + top speed) ---------------- */
 const BOARDS = {

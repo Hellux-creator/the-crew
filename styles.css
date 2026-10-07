@@ -72,8 +72,8 @@ a.btn.primary{color:var(--accent-ink)}
 .h-row .h{margin:0}
 .sub{color:var(--muted);margin:0 0 16px;max-width:60ch}
 
-.tabs{position:absolute;z-index:950;left:0;right:0;bottom:0;height:calc(var(--tabh) + var(--sab));padding-bottom:var(--sab);display:grid;grid-template-columns:repeat(6,1fr);background:var(--panel);border-top:1px solid var(--line)}
-.tab{background:none;border:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:10px;padding:0;min-width:0;font-weight:600;letter-spacing:.04em;color:var(--muted);text-transform:uppercase}
+.tabs{position:absolute;z-index:950;left:0;right:0;bottom:0;height:calc(var(--tabh) + var(--sab));padding-bottom:var(--sab);display:grid;grid-template-columns:repeat(7,1fr);background:var(--panel);border-top:1px solid var(--line)}
+.tab{background:none;border:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:9px;padding:0;min-width:0;font-weight:600;letter-spacing:.04em;color:var(--muted);text-transform:uppercase}
 .tab.active{color:var(--accent)}
 
 /* ---------- map furniture ---------- */
@@ -238,3 +238,6 @@ select{font:inherit;color:var(--fg);background:var(--panel-2);border:1px solid v
 /* ---------- drive to reveal ---------- */
 .fog-stat{position:absolute;z-index:700;left:12px;top:calc(60px + var(--sat));background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--accent);color:var(--accent);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600;backdrop-filter:blur(6px)}
 .app.is-demo .fog-stat{top:calc(100px + var(--sat))}
+
+.tab svg{width:21px;height:21px}
+#btn-showfog{margin-top:4px}

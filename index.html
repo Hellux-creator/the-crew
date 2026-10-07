@@ -150,6 +150,16 @@
     <div id="garage-list" class="cars"></div>
   </section>
 
+  <section id="view-explore" class="view sheet" hidden>
+    <h2 class="h">Explore</h2>
+    <p class="sub">Every road you drive lights up on your map. Cover new ground to climb the board.</p>
+    <div class="stats" id="explore-stats"></div>
+    <button id="btn-showfog" class="btn ghost wide">Show my revealed map</button>
+    <div id="explore-podium"></div>
+    <h3 class="h3" id="explore-rest-h" hidden>The rest</h3>
+    <ol id="explore-board" class="board"></ol>
+  </section>
+
   <section id="view-speed" class="view sheet" hidden>
     <div class="h-row"><h2 class="h">Top Speed</h2><button id="btn-addspeed" class="btn ghost sm">Log manually</button></div>
     <div id="speed-session"></div>
@@ -201,6 +211,7 @@
     <button class="tab active" data-view="map" role="tab"><svg viewBox="0 0 24 24"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Zm0 0v14m6-12v14" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Map</button>
     <button class="tab" data-view="convoy" role="tab"><svg viewBox="0 0 24 24"><path d="M4 17h2m12 0h2M3 13l2-5h10l3 5M3 13h18v4H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="7" cy="17" r="2" fill="currentColor"/><circle cx="17" cy="17" r="2" fill="currentColor"/></svg>Convoy</button>
     <button class="tab" data-view="garage" role="tab"><svg viewBox="0 0 24 24"><path d="M3 10 12 4l9 6v10H3z M7 20v-6h10v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Garage</button>
+    <button class="tab" data-view="explore" role="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15.5 8.5-2 5-5 2 2-5z" fill="currentColor"/></svg>Explore</button>
     <button class="tab" data-view="speed" role="tab"><svg viewBox="0 0 24 24"><path d="M4 17a8 8 0 1 1 16 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="m12 17 4.5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.6" fill="currentColor"/></svg>Speed</button>
     <button class="tab" data-view="bass" role="tab"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="14" r="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="14" r="1" fill="currentColor"/><circle cx="12" cy="7" r="1.3" fill="currentColor"/></svg>Bass</button>
     <button class="tab" data-view="crew" role="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M2 20c0-4 3-6 7-6s7 2 7 6M16 4a3.5 3.5 0 0 1 0 7M18 14c2.5.5 4 2.5 4 6" fill="none" stroke="currentColor" stroke-width="2"/></svg>Crew</button>
