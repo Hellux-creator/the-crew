@@ -12,7 +12,7 @@ const S = {
   boards: { bass: [], speed: [] }, boardClass: { bass: "All", speed: "All" },
   explored: new Set(), pendingCells: new Set(),
   pos: null, lastFix: null, lastSent: null, km: 0,
-  ghost: false, fog: false, view: "map", pick: false, pendingDest: null,
+  ghost: false, fog: false, mapTheme: "night", view: "map", pick: false, pendingDest: null,
   map: null, markers: new Map(), meMarker: null, convoyLayer: null, fogLayer: null,
   unsubs: [], watchId: null, wakeLock: null, didFit: false,
 };
@@ -221,7 +221,7 @@ async function enterApp() {
 function initMap() {
   if (S.map) { setTimeout(() => S.map.invalidateSize(), 50); return; }
   S.map = L.map("map", { zoomControl: false, attributionControl: true, worldCopyJump: true }).setView([-25.75, 28.23], 11);
-  // OpenStreetMap tiles, darkened with a CSS filter (see .leaflet-tile-pane in styles.css)
+  // OpenStreetMap tiles; night mode darkens them with a CSS filter (see #map.night in styles.css)
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
@@ -229,6 +229,8 @@ function initMap() {
   S.map.createPane("fog").style.zIndex = 350;
   S.convoyLayer = L.layerGroup().addTo(S.map);
   S.fogLayer = new FogLayer();
+  const hr = new Date().getHours();
+  setMapTheme(lsGet("mapTheme", hr >= 18 || hr < 6 ? "night" : "day"));
   S.map.on("click", (e) => {
     if (!S.pick) return;
     S.pendingDest = { lat: +e.latlng.lat.toFixed(6), lng: +e.latlng.lng.toFixed(6) };
@@ -238,43 +240,152 @@ function initMap() {
   });
 }
 
+/* ---------- drive-to-reveal fog ---------- */
+// Soft, slowly drifting fog. Roads you've driven are cut out as smooth glowing trails.
+const FOG_THEMES = {
+  night: { base: "rgba(8,11,18,0.9)", wisp: [150, 165, 190], wispAlpha: 0.10, glow: "rgba(255,176,32,0.20)" },
+  day: { base: "rgba(226,230,236,0.86)", wisp: [255, 255, 255], wispAlpha: 0.55, glow: "rgba(255,150,0,0.16)" },
+};
+function makeCloudTexture(rgb, alpha) {
+  const N = 320, c = document.createElement("canvas");
+  c.width = c.height = N;
+  const ctx = c.getContext("2d");
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let i = 0; i < 70; i++) {
+    const x = rnd() * N, y = rnd() * N, r = 25 + rnd() * 70, a = alpha * (0.35 + rnd() * 0.65);
+    for (const dx of [-N, 0, N]) for (const dy of [-N, 0, N]) { // wrap so the texture tiles without seams
+      const g = ctx.createRadialGradient(x + dx, y + dy, 0, x + dx, y + dy, r);
+      g.addColorStop(0, `rgba(${rgb},${a})`);
+      g.addColorStop(1, `rgba(${rgb},0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(x + dx - r, y + dy - r, r * 2, r * 2);
+    }
+  }
+  return c;
+}
+
 const FogLayer = L.Layer.extend({
+  PAD: 0.3,
   onAdd(map) {
     this._map = map;
-    this._c = L.DomUtil.create("canvas", "fog-canvas", map.getPane("fog"));
+    this._c = L.DomUtil.create("canvas", "fog-canvas leaflet-zoom-animated", map.getPane("fog"));
     this._c.style.pointerEvents = "none";
-    map.on("move zoom resize viewreset", this._draw, this);
-    this._draw();
+    this._mask = document.createElement("canvas");
+    this._glow = document.createElement("canvas");
+    this._setTheme();
+    map.on("moveend zoomend resize viewreset", this.redraw, this);
+    map.on("zoomanim", this._onZoomAnim, this);
+    this.redraw();
+    this._t0 = performance.now();
+    this._loop = this._loop.bind(this);
+    this._raf = requestAnimationFrame(this._loop);
   },
-  onRemove(map) { map.off("move zoom resize viewreset", this._draw, this); this._c.remove(); },
-  redraw() { if (this._map) this._draw(); },
-  _draw() {
-    const map = this._map, c = this._c, size = map.getSize(), dpr = window.devicePixelRatio || 1;
-    L.DomUtil.setPosition(c, map.containerPointToLayerPoint([0, 0]));
-    c.width = size.x * dpr; c.height = size.y * dpr;
-    c.style.width = size.x + "px"; c.style.height = size.y + "px";
-    const ctx = c.getContext("2d");
-    ctx.scale(dpr, dpr);
-    ctx.fillStyle = "rgba(4,6,10,0.9)";
-    ctx.fillRect(0, 0, size.x, size.y);
-    const vb = map.getBounds().pad(0.05);
-    const pad = map.getZoom() >= 14 ? 3 : 4;
-    const rects = [];
+  onRemove(map) {
+    map.off("moveend zoomend resize viewreset", this.redraw, this);
+    map.off("zoomanim", this._onZoomAnim, this);
+    cancelAnimationFrame(this._raf);
+    this._c.remove();
+  },
+  _setTheme() {
+    this._theme = FOG_THEMES[S.mapTheme] || FOG_THEMES.night;
+    const t = this._theme;
+    this._pattern = this._c.getContext("2d").createPattern(makeCloudTexture(t.wisp.join(","), t.wispAlpha), "repeat");
+  },
+  setTheme() { if (this._map) { this._setTheme(); this.redraw(); } },
+  // Called when the map stops moving or a new road is driven: rebuild the "cleared" mask.
+  redraw() {
+    const map = this._map;
+    if (!map) return;
+    const size = map.getSize(), p = this.PAD;
+    const min = map.containerPointToLayerPoint(size.multiplyBy(-p)).round();
+    const W = Math.round(size.x * (1 + 2 * p)), H = Math.round(size.y * (1 + 2 * p));
+    this._min = min; this._center = map.getCenter(); this._zoom = map.getZoom();
+    for (const c of [this._c, this._mask, this._glow]) { c.width = W; c.height = H; }
+    this._c.style.width = W + "px"; this._c.style.height = H + "px";
+    L.DomUtil.setPosition(this._c, min);
+    const m = this._mask.getContext("2d");
+    m.clearRect(0, 0, W, H);
+    const ne = map.layerPointToLatLng(min), sw = map.layerPointToLatLng(min.add([W, H]));
+    // size of one road square on screen right now
+    let cellPx = 10;
     for (const gh of S.explored) {
       const b = ghBounds(gh);
-      if (b.n < vb.getSouth() || b.s > vb.getNorth() || b.e < vb.getWest() || b.w > vb.getEast()) continue;
-      const p1 = map.latLngToContainerPoint([b.n, b.w]), p2 = map.latLngToContainerPoint([b.s, b.e]);
-      rects.push([p1.x - pad / 2, p1.y - pad / 2, Math.max(5, p2.x - p1.x + pad), Math.max(5, p2.y - p1.y + pad)]);
+      if (b.n < sw.lat || b.s > ne.lat || b.e < ne.lng || b.w > sw.lng) continue;
+      const a = map.latLngToLayerPoint([b.n, b.w]), z = map.latLngToLayerPoint([b.s, b.e]);
+      cellPx = Math.abs(z.x - a.x);
+      const r = Math.max(7, cellPx * 1.15);
+      const cx = (a.x + z.x) / 2 - min.x, cy = (a.y + z.y) / 2 - min.y;
+      const g = m.createRadialGradient(cx, cy, 0, cx, cy, r);
+      g.addColorStop(0, "rgba(0,0,0,1)");
+      g.addColorStop(0.55, "rgba(0,0,0,0.85)");
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      m.fillStyle = g;
+      m.fillRect(cx - r, cy - r, r * 2, r * 2);
     }
-    // punch the driven squares out of the fog...
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.fillStyle = "#000";
-    for (const r of rects) ctx.fillRect(...r);
-    // ...then give them a faint amber glow so they read as "yours"
-    ctx.globalCompositeOperation = "source-over";
-    ctx.fillStyle = "rgba(255,176,32,0.14)";
-    for (const r of rects) ctx.fillRect(...r);
+    // warm glow along the cleared trails
+    const gctx = this._glow.getContext("2d");
+    gctx.clearRect(0, 0, W, H);
+    gctx.drawImage(this._mask, 0, 0);
+    gctx.globalCompositeOperation = "source-in";
+    gctx.fillStyle = this._theme.glow;
+    gctx.fillRect(0, 0, W, H);
+    gctx.globalCompositeOperation = "source-over";
+    this._paint(performance.now());
   },
+  _paint(now) {
+    const c = this._c, ctx = c.getContext("2d"), W = c.width, H = c.height;
+    ctx.globalCompositeOperation = "source-over";
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = this._theme.base;
+    ctx.fillRect(0, 0, W, H);
+    // two layers of wisps drifting at different speeds
+    const t = (now - this._t0) / 1000;
+    for (const [sp, sc] of [[6, 1], [-4, 1.7]]) {
+      ctx.save();
+      ctx.translate((t * sp) % 320, (t * sp * 0.4) % 320);
+      ctx.scale(sc, sc);
+      ctx.fillStyle = this._pattern;
+      ctx.fillRect(-320, -320, W / sc + 640, H / sc + 640);
+      ctx.restore();
+    }
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.drawImage(this._mask, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.drawImage(this._glow, 0, 0);
+  },
+  _loop(now) {
+    this._raf = requestAnimationFrame(this._loop);
+    if (document.hidden || S.view !== "map" || this._map._animatingZoom) return;
+    if (now - (this._last || 0) < 66) return; // ~15 fps is plenty for drifting fog
+    this._last = now;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches && this._painted) return;
+    this._painted = true;
+    this._paint(now);
+  },
+  _onZoomAnim(e) {
+    const map = this._map, scale = map.getZoomScale(e.zoom, this._zoom);
+    const viewHalf = map.getSize().multiplyBy(0.5 + this.PAD);
+    const offset = viewHalf.multiplyBy(-scale).add(map.project(this._center, e.zoom)).subtract(map._getNewPixelOrigin(e.center, e.zoom));
+    L.DomUtil.setTransform(this._c, offset, scale);
+  },
+});
+
+/* ---------- day / night map ---------- */
+function setMapTheme(theme) {
+  S.mapTheme = theme === "day" ? "day" : "night";
+  lsSet("mapTheme", S.mapTheme);
+  $("#map").classList.toggle("night", S.mapTheme === "night");
+  const b = $("#btn-theme");
+  b.setAttribute("aria-label", S.mapTheme === "night" ? "Switch to day map" : "Switch to night map");
+  b.innerHTML = S.mapTheme === "night"
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" fill="currentColor"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+  if (S.fogLayer) S.fogLayer.setTheme();
+}
+$("#btn-theme").addEventListener("click", () => {
+  setMapTheme(S.mapTheme === "night" ? "day" : "night");
+  toast(S.mapTheme === "night" ? "Night map" : "Day map");
 });
 
 function setFog(on) {

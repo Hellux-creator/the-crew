@@ -87,7 +87,10 @@ a.btn.primary{color:var(--accent-ink)}
 .convoy-strip .meta{color:var(--muted);font-size:13px}
 .gps-warn{position:absolute;z-index:700;left:12px;right:72px;top:calc(60px + var(--sat));background:#2b1414;border:1px solid #6b2a2a;color:#ffb4b4;border-radius:10px;padding:8px 12px;font-size:13px}
 .leaflet-container{font-family:var(--f-body);background:#0b0f15}
-.leaflet-tile-pane{filter:invert(1) hue-rotate(185deg) brightness(.85) contrast(.92) saturate(.6)}
+#map.night .leaflet-tile-pane{filter:invert(1) hue-rotate(185deg) brightness(.85) contrast(.92) saturate(.6)}
+#map:not(.night){background:#e9e5dc}
+#map:not(.night) .leaflet-control-attribution{background:rgba(255,255,255,.8)!important;color:#333!important}
+#map:not(.night) .leaflet-control-attribution a{color:#333!important}
 .app.is-demo .sheet{padding-top:calc(104px + var(--sat))}
 .app.is-demo .pick-banner,.app.is-demo .gps-warn{top:calc(100px + var(--sat))}
 .leaflet-control-attribution{background:rgba(13,17,23,.7)!important;color:var(--muted)!important;font-size:10px}
