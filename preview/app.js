@@ -733,7 +733,11 @@ $("#btn-pick-cancel").addEventListener("click", () => {
 $("#btn-convoy-cancel").addEventListener("click", () => dlgConvoy.close());
 $("#form-convoy").addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (!S.pendingDest) { toast("Search for the destination, or drop a pin on the map"); return; }
+  const typedDest = $("#in-convoy-search").value.trim();
+  if (!S.pendingDest && typedDest.length >= 3) {
+    try { const [r] = await searchPlaces(typedDest); if (r) { S.pendingDest = { lat: r.lat, lng: r.lng }; if (!$("#in-convoy-dest").value) $("#in-convoy-dest").value = r.name.slice(0, 40); } } catch {}
+  }
+  if (!S.pendingDest) { renderConvoyPicked(); toast("Couldn't find that place. Pick one from the list, or drop a pin on the map."); return; }
   const name = $("#in-convoy-name").value.trim();
   if (!name) return;
   const cur = myConvoy();
@@ -826,7 +830,7 @@ function renderMeets() {
       return h("button", { class: `meet${soon ? " soon" : ""}`, onclick: () => openMeetView(m.id) },
         h("div", { class: "cal" }, h("div", { class: "m" }, MONTHS[d.getMonth()]), h("div", { class: "d" }, String(d.getDate())), h("div", { class: "w" }, `${DAYS[d.getDay()]} ${fmtTime(m.when)}`)),
         h("div", { class: "grow" }, h("div", { class: "t" }, m.title),
-          h("div", { class: "s" }, [m.place?.label, S.pos && m.place ? fmtKm(haversine(S.pos, m.place)) + " away" : ""].filter(Boolean).join(" · ")),
+          h("div", { class: "s" }, "📍 ", [m.place?.label || "Pinned on the map", S.pos && m.place ? fmtKm(haversine(S.pos, m.place)) + " away" : ""].filter(Boolean).join(" · ")),
           h("span", { class: "countdown" }, countdown(m.when)), goingRow(m)));
     })) : h("div", { class: "empty" }, h("div", { class: "big" }, "No meets planned"), h("p", {}, "Post one with a time and a pin. The crew can tap I'm in, and it shows on the map.")));
 }
@@ -835,7 +839,7 @@ function renderMeetPins() {
   if (!S.meetLayer) return;
   S.meetLayer.clearLayers();
   for (const m of S.meets) {
-    if (!m.place || m.when < Date.now() - 3 * 3600000 || m.when > Date.now() + 14 * 86400000) continue;
+    if (!m.place || m.when < Date.now() - 3 * 3600000) continue;
     const d = new Date(m.when);
     const html = `<div class="meet-pin"><div class="b">${esc(m.title)}<small>${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]} · ${fmtTime(m.when)} · ${(m.going || []).length} going</small></div><div class="tip"></div></div>`;
     L.marker([m.place.lat, m.place.lng], { icon: L.divIcon({ className: "", html, iconSize: [0, 0] }), zIndexOffset: 300 })
@@ -882,6 +886,11 @@ function openMeetDialog(keep, editMeet) {
       $("#in-meet-notes").value = editMeet.notes || "";
     }
   }
+  if (!keep && !editMeet) {
+    const t = new Date(); t.setMinutes(0, 0, 0); t.setHours(t.getHours() < 17 ? 18 : t.getHours() + 2);
+    const pad = (n) => String(n).padStart(2, "0");
+    $("#in-meet-when").value = `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}T${pad(t.getHours())}:00`;
+  }
   $("#meet-dlg-title").textContent = meetDraft.editing ? "Edit meet" : "Post a meet";
   $("#btn-meet-delete").hidden = !meetDraft.editing;
   $("#form-meet button[type=submit]").textContent = meetDraft.editing ? "Save" : "Post meet";
@@ -915,17 +924,33 @@ $("#btn-meet-delete").addEventListener("click", async (e) => {
 });
 $("#form-meet").addEventListener("submit", async (e) => {
   e.preventDefault();
+  const btn = $("#form-meet button[type=submit]");
   const when = new Date($("#in-meet-when").value).getTime();
   if (!when || isNaN(when)) { toast("Pick a date and time"); return; }
-  if (!meetDraft.place) { toast("Search for the place, or drop a pin on the map"); return; }
-  const data = { title: $("#in-meet-title").value.trim(), when, notes: $("#in-meet-notes").value.trim(), place: { ...meetDraft.place, label: $("#in-meet-place").value.trim() } };
+  if (when < Date.now() - 15 * 60000) { toast("That time has already passed. Pick a time in the future."); return; }
+  // typed a place but never tapped a suggestion: use the best match
+  const typed = $("#in-meet-search").value.trim();
+  if (!meetDraft.place && typed.length >= 3) {
+    btn.disabled = true; btn.textContent = "Finding place…";
+    try {
+      const [r] = await searchPlaces(typed);
+      if (r) { meetDraft.place = { lat: r.lat, lng: r.lng }; if (!$("#in-meet-place").value) $("#in-meet-place").value = r.name.slice(0, 50); }
+    } catch {}
+    btn.disabled = false;
+  }
+  btn.textContent = meetDraft.editing ? "Save" : "Post meet";
+  if (!meetDraft.place) { renderMeetPicked(); toast("Couldn't find that place. Pick one from the list, or drop a pin on the map."); return; }
+  const data = { title: $("#in-meet-title").value.trim(), when, notes: $("#in-meet-notes").value.trim(), place: { ...meetDraft.place, label: $("#in-meet-place").value.trim() || typed } };
   if (!data.title) return;
-  if (meetDraft.editing) await S.store.updateMeet(S.crew.id, meetDraft.editing.id, data);
+  const editing = meetDraft.editing;
+  if (editing) await S.store.updateMeet(S.crew.id, editing.id, data);
   else await S.store.createMeet(S.crew.id, { ...data, hostId: S.uid, going: [S.uid], createdAt: Date.now() });
   dlgMeet.close();
-  toast(meetDraft.editing ? "Meet updated" : "Meet posted. It's on the crew map.");
   meetDraft = { place: null, editing: null };
-  setView("convoy"); setSeg("meets");
+  // show it where it landed
+  setView("map");
+  S.map.flyTo([data.place.lat, data.place.lng], 15, { duration: 0.8 });
+  toast(editing ? "Meet updated" : `Meet posted at ${data.place.label || "the pin"}`);
 });
 
 /* ---------------- 360° spin view ---------------- */
