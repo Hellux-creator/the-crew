@@ -660,8 +660,20 @@ const nextPaint = (video) => new Promise((res) => {
   else requestAnimationFrame(() => requestAnimationFrame(res));
 });
 
+// How dark is a frame? Phones that can't decode a video hand back pure black.
+function isBlack(ctx, w, h) {
+  const sw = 24, sh = 14, t = document.createElement("canvas");
+  t.width = sw; t.height = sh;
+  const tc = t.getContext("2d");
+  tc.drawImage(ctx.canvas, 0, 0, w, h, 0, 0, sw, sh);
+  const d = tc.getImageData(0, 0, sw, sh).data;
+  let sum = 0;
+  for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+  return sum / (d.length / 4) / 3 < 10;
+}
+
 // Pull evenly spaced frames out of a walk-around video (or use picked photos in order).
-async function framesFromFiles(files, onProgress) {
+async function framesFromFiles(files, onProgress, stage) {
   const list = [...files];
   if (list.length > 1 || (list[0] && list[0].type.startsWith("image/"))) {
     const imgs = list.filter((f) => f.type.startsWith("image/")).slice(0, 36);
@@ -671,16 +683,15 @@ async function framesFromFiles(files, onProgress) {
   }
   const url = URL.createObjectURL(list[0]);
   const video = document.createElement("video");
-  video.muted = true; video.playsInline = true; video.setAttribute("playsinline", ""); video.preload = "auto";
-  // iPhones only decode video that is actually on the page, so keep it there, invisible
-  video.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none";
-  document.body.append(video);
+  video.muted = true; video.defaultMuted = true; video.playsInline = true;
+  video.setAttribute("playsinline", ""); video.setAttribute("webkit-playsinline", ""); video.setAttribute("muted", "");
+  video.preload = "auto"; video.className = "spin-work";
+  // phones only decode video that is really on screen, so show it while we work
+  (stage || document.body).append(video);
   video.src = url;
   try {
     const failed = new Promise((_, rej) => video.addEventListener("error", () => rej(new Error("decode")), { once: true }));
-    await Promise.race([waitFor(video, "loadedmetadata", 45000), failed]);
-    try { await video.play(); } catch {}
-    video.pause();
+    await Promise.race([waitFor(video, "loadeddata", 45000), failed]);
     const dur = video.duration;
     if (!isFinite(dur) || dur < 2) throw new Error("short");
     const w0 = video.videoWidth, h0 = video.videoHeight;
@@ -688,17 +699,48 @@ async function framesFromFiles(files, onProgress) {
     const s = Math.min(1, FRAME_MAX / Math.max(w0, h0));
     const c = document.createElement("canvas");
     c.width = Math.round(w0 * s); c.height = Math.round(h0 * s);
-    const ctx = c.getContext("2d");
-    const out = [];
-    for (let i = 0; i < SPIN_FRAMES; i++) {
-      const t = Math.min(dur - 0.1, (dur * i) / SPIN_FRAMES + 0.05);
-      video.currentTime = t;
-      try { await waitFor(video, "seeked", 12000); } catch { /* slow phone: use whatever frame is showing */ }
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    const times = Array.from({ length: SPIN_FRAMES }, (_, i) => Math.min(dur - 0.1, (dur * i) / SPIN_FRAMES + 0.05));
+    const grab = () => { ctx.drawImage(video, 0, 0, c.width, c.height); return isBlack(ctx, c.width, c.height) ? null : c.toDataURL("image/jpeg", FRAME_Q); };
+
+    // Method 1: jump to each point in the video
+    try { await video.play(); } catch {}
+    video.pause();
+    let out = [], black = 0;
+    for (let i = 0; i < times.length; i++) {
+      video.currentTime = times[i];
+      try { await waitFor(video, "seeked", 12000); } catch {}
       await nextPaint(video);
-      ctx.drawImage(video, 0, 0, c.width, c.height);
-      out.push(c.toDataURL("image/jpeg", FRAME_Q));
-      onProgress?.(i + 1, SPIN_FRAMES);
+      const f = grab();
+      if (f) out.push(f); else black++;
+      onProgress?.(i + 1, times.length);
+      if (i === 3 && black >= 3) break; // this phone gives black frames when jumping; switch method
     }
+    if (out.length >= SPIN_FRAMES * 0.75) return out;
+
+    // Method 2: play the video through and grab frames as they go past
+    out = [];
+    video.currentTime = 0;
+    try { await waitFor(video, "seeked", 8000); } catch {}
+    video.playbackRate = dur > 20 ? 2 : 1;
+    let next = 0;
+    await new Promise((resolve) => {
+      const tick = () => {
+        if (next < times.length && video.currentTime >= times[next] - 0.04) {
+          const f = grab();
+          if (f) out.push(f);
+          next++;
+          onProgress?.(next, times.length);
+        }
+        if (next >= times.length || video.ended) return resolve();
+        if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(tick); else requestAnimationFrame(tick);
+      };
+      video.addEventListener("ended", resolve, { once: true });
+      video.play().then(tick).catch(resolve);
+      setTimeout(resolve, (dur / video.playbackRate + 10) * 1000);
+    });
+    video.pause();
+    if (out.length < 6) throw new Error("black");
     return out;
   } finally { URL.revokeObjectURL(url); video.removeAttribute("src"); video.load(); video.remove(); }
 }
@@ -793,14 +835,18 @@ $("#in-car-spin").addEventListener("change", async (e) => {
   saveBtn.disabled = true;
   try {
     renderSpinEdit("Making your 360° view… keep this screen open.");
-    const frames = await framesFromFiles(files, (n, t) => { const f = $("#spin-edit .fine"); if (f) f.textContent = `Making your 360° view… ${n}/${t}. Keep this screen open.`; });
+    const stage = h("div", { class: "spin-stage" });
+    $("#spin-edit .lbl").after(stage);
+    const frames = await framesFromFiles(files, (n, t) => { const f = $("#spin-edit .fine"); if (f) f.textContent = `Making your 360° view… ${n}/${t}. Keep this screen open.`; }, stage);
     if (frames.length < 6) throw new Error("few");
     spinNew = await Promise.all(frames.map((f) => capSize(f)));
     renderSpinEdit();
     toast("360° view ready. Tap Save to keep it.");
   } catch (err) {
     console.warn("360 failed", err);
-    renderSpinEdit("Couldn't read that video on this phone. Try recording it again in the normal Camera app at 1080p (not 4K or Cinematic), or pick 12–24 photos taken around the car.");
+    renderSpinEdit(String(err?.message) === "black"
+      ? "Your phone only gave black frames from that video. On iPhone: Settings → Camera → Record Video → turn off HDR Video, then record again. Or pick 12–24 photos taken around the car instead."
+      : "Couldn't read that video on this phone. Record it again in the normal Camera app at 1080p (not 4K, HDR or Cinematic), or pick 12–24 photos taken around the car.");
   } finally { saveBtn.disabled = false; e.target.value = ""; }
 });
 async function deleteSpinFrames(spinId, count) {
