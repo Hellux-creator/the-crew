@@ -1,0 +1,55 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isMe(uid) { return signedIn() && request.auth.uid == uid; }
+    function crewPath(c) { return /databases/$(database)/documents/crews/$(c); }
+    function inCrew(c) { return signedIn() && exists(/databases/$(database)/documents/crews/$(c)/members/$(request.auth.uid)); }
+
+    // Your own profile and explored roads: only you.
+    match /users/{uid} {
+      allow read, write: if isMe(uid);
+      match /explored/{prefix} { allow read, write: if isMe(uid); }
+      // Garage: anyone signed in can look, only you can change it.
+      match /vehicles/{vid} {
+        allow read: if signedIn();
+        allow write: if isMe(uid);
+      }
+    }
+
+    match /crews/{c} {
+      // Knowing the invite code lets you look up the crew to join it. Nobody can list all crews.
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.ownerId == request.auth.uid;
+
+      // Locations and phone numbers: only crew members can see them; you can only write your own.
+      match /members/{uid} {
+        allow read: if inCrew(c);
+        allow create, update: if isMe(uid) && exists(crewPath(c));
+        allow delete: if isMe(uid) || (signedIn() && get(crewPath(c)).data.ownerId == request.auth.uid);
+      }
+
+      // Bass scores: the crew sees them all. You log and delete your own; crew mates can only add themselves as witnesses.
+      match /bass/{id} {
+        allow read: if inCrew(c);
+        allow create: if inCrew(c) && request.resource.data.uid == request.auth.uid
+                      && request.resource.data.db is number && request.resource.data.witnesses.size() == 0;
+        allow update: if inCrew(c)
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['witnesses'])
+                      && request.resource.data.witnesses.hasAll(resource.data.witnesses)
+                      && request.resource.data.witnesses.removeAll(resource.data.witnesses).hasOnly([request.auth.uid])
+                      && resource.data.uid != request.auth.uid;
+        allow delete: if inCrew(c) && resource.data.uid == request.auth.uid;
+      }
+
+      match /convoys/{id} {
+        allow read: if inCrew(c);
+        allow create: if inCrew(c) && request.resource.data.leaderId == request.auth.uid;
+        allow update: if inCrew(c);
+        allow delete: if inCrew(c) && resource.data.leaderId == request.auth.uid;
+      }
+    }
+  }
+}
