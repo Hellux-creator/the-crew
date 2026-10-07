@@ -44,6 +44,19 @@ service cloud.firestore {
         allow delete: if inCrew(c) && resource.data.uid == request.auth.uid;
       }
 
+      // Top speed runs: same rules as bass.
+      match /speed/{id} {
+        allow read: if inCrew(c);
+        allow create: if inCrew(c) && request.resource.data.uid == request.auth.uid
+                      && request.resource.data.kmh is number && request.resource.data.witnesses.size() == 0;
+        allow update: if inCrew(c)
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['witnesses'])
+                      && request.resource.data.witnesses.hasAll(resource.data.witnesses)
+                      && request.resource.data.witnesses.removeAll(resource.data.witnesses).hasOnly([request.auth.uid])
+                      && resource.data.uid != request.auth.uid;
+        allow delete: if inCrew(c) && resource.data.uid == request.auth.uid;
+      }
+
       match /convoys/{id} {
         allow read: if inCrew(c);
         allow create: if inCrew(c) && request.resource.data.leaderId == request.auth.uid;

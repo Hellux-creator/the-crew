@@ -56,24 +56,15 @@ export async function createFirebaseStore(config) {
     leaveConvoy: (code, id, uid) => updateDoc(doc(db, "crews", code, "convoys", id), { memberIds: arrayRemove(uid) }),
     endConvoy: (code, id) => updateDoc(doc(db, "crews", code, "convoys", id), { active: false, endedAt: Date.now() }),
 
-    onBass: (code, cb, err) => onSnapshot(collection(db, "crews", code, "bass"), (s) => cb(list(s)), err),
-    async addBass(code, data) { const r = await addDoc(collection(db, "crews", code, "bass"), data); return r.id; },
-    witnessBass: (code, id, uid) => updateDoc(doc(db, "crews", code, "bass", id), { witnesses: arrayUnion(uid) }),
-    deleteBass: (code, id) => deleteDoc(doc(db, "crews", code, "bass", id)),
+    // leaderboards: coll is "bass" or "speed"
+    onBoard: (code, coll, cb, err) => onSnapshot(collection(db, "crews", code, coll), (s) => cb(list(s)), err),
+    async addBoard(code, coll, data) { const r = await addDoc(collection(db, "crews", code, coll), data); return r.id; },
+    witnessBoard: (code, coll, id, uid) => updateDoc(doc(db, "crews", code, coll, id), { witnesses: arrayUnion(uid) }),
+    deleteBoard: (code, coll, id) => deleteDoc(doc(db, "crews", code, coll, id)),
 
     onVehicles: (uid, cb, err) => onSnapshot(collection(db, "users", uid, "vehicles"), (s) => cb(list(s)), err),
     async getVehicles(uid) { return list(await getDocs(collection(db, "users", uid, "vehicles"))); },
     saveVehicle: (uid, v) => { const { id, ...rest } = v; return setDoc(doc(db, "users", uid, "vehicles", id), rest); },
     deleteVehicle: (uid, id) => deleteDoc(doc(db, "users", uid, "vehicles", id)),
-
-    async loadExplored(uid) {
-      const out = new Set();
-      for (const d of (await getDocs(collection(db, "users", uid, "explored"))).docs) (d.data().cells || []).forEach((c) => out.add(c));
-      return out;
-    },
-    async addExplored(uid, byPrefix) {
-      await Promise.all(Object.entries(byPrefix).map(([p, cells]) =>
-        setDoc(doc(db, "users", uid, "explored", p), { cells: arrayUnion(...cells) }, { merge: true })));
-    },
   };
 }

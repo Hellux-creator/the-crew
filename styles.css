@@ -202,3 +202,35 @@ select{font:inherit;color:var(--fg);background:var(--panel-2);border:1px solid v
 .steps li::marker{color:var(--accent);font-weight:700}
 .inl{width:18px;height:18px;vertical-align:-3px;color:var(--accent)}
 .linkish{background:none;border:0;color:var(--muted);text-decoration:underline;font-size:14px;padding:8px;align-self:center}
+
+/* ---------- podium ---------- */
+.podium{display:grid;grid-template-columns:1fr 1.15fr 1fr;align-items:end;gap:8px;margin:14px 0 6px}
+.pod{display:flex;flex-direction:column;align-items:center;text-align:center;gap:4px;min-width:0}
+.pod .av{width:44px;height:44px;font-size:20px}
+.pod.p1 .av{width:56px;height:56px;font-size:24px}
+.pod-name{font-weight:600;font-size:14px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pod-val{font:800 26px/1 var(--f-display);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pod.p1 .pod-val{font-size:34px;color:var(--accent)}
+.pod-val small{font-size:13px;color:var(--muted);margin-left:2px}
+.pod-car{font-size:12px;color:var(--muted);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plinth{width:100%;margin-top:6px;border-radius:10px 10px 0 0;display:grid;place-items:center;background:linear-gradient(var(--panel-2),var(--panel));border:1px solid var(--line);border-bottom:0}
+.plinth span{font:800 28px/1 var(--f-display);color:var(--line)}
+.p1 .plinth{height:92px;border-color:#7a5a12;background:linear-gradient(#3a2a08,var(--panel))}
+.p2 .plinth{height:64px}
+.p3 .plinth{height:44px}
+.pod.vacant{opacity:.35}
+.medal{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font:800 17px/1 var(--f-display);color:#1a1200;box-shadow:inset 0 -3px 0 rgba(0,0,0,.25),0 2px 8px rgba(0,0,0,.4)}
+.pod.p1 .medal{width:42px;height:42px;font-size:21px}
+.medal.gold{background:radial-gradient(circle at 35% 30%,#fff2b0,#f5c400 45%,#b8860b)}
+.medal.silver{background:radial-gradient(circle at 35% 30%,#ffffff,#c9d1da 45%,#8a96a3)}
+.medal.bronze{background:radial-gradient(circle at 35% 30%,#ffd2a8,#cd7f32 45%,#8a4f1d)}
+
+/* ---------- speed session ---------- */
+.session{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px;display:flex;flex-direction:column;gap:12px;margin-bottom:14px}
+.session.live{border-color:var(--bad);background:radial-gradient(120% 120% at 50% 0%,#3a1010 0%,var(--panel) 65%)}
+.gauge{text-align:center}
+.gauge .now{font:800 84px/0.9 var(--f-display);font-variant-numeric:tabular-nums}
+.gauge .now small{font-size:22px;color:var(--muted);margin-left:4px}
+.gauge .meta{display:flex;justify-content:center;gap:18px;color:var(--muted);font-size:13px;margin-top:6px}
+.gauge .meta b{display:block;font:800 26px/1 var(--f-display);color:var(--accent);font-variant-numeric:tabular-nums}
+.recdot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--bad);margin-right:6px;animation:pulse 1.4s infinite}

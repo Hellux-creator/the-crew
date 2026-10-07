@@ -1,5 +1,5 @@
 // Demo backend: everything in memory, with a pretend crew driving around Pretoria.
-import { densify, ghEncode } from "./geo.js";
+import { densify } from "./geo.js";
 
 const P = (lat, lng) => ({ lat, lng });
 const ROUTES = {
@@ -31,19 +31,21 @@ export function createDemoStore() {
   };
   let convoys = [{ id: "c1", name: "Sunday run to Hartbeespoort", dest: { lat: -25.7247, lng: 27.8486, label: "Dam wall" }, leaderId: "dewald", memberIds: ["dewald", "ruan"], active: true, createdAt: now - 1800000 }];
   const H = 3600000;
-  let bass = [
+  const boards = { bass: [
     { id: "b1", uid: "dewald", db: 151.3, hz: 41, cls: "Extreme", car: "Big Grunt", setup: "4x 15\" subs, 5000 W", venue: "Menlyn Maine meet", witnesses: ["ruan", "lize"], createdAt: now - 26 * H },
     { id: "b2", uid: "ruan", db: 138.7, hz: 48, cls: "Street", car: "Golf 7 GTI", setup: "2x 12\" subs, 1500 W", venue: "Menlyn Maine meet", witnesses: ["dewald"], createdAt: now - 25 * H },
     { id: "b3", uid: "lize", db: 132.4, hz: 52, cls: "Daily", car: "Rooi Gevaar", setup: "1x 10\" sub, 600 W", venue: "Centurion Mall lot", witnesses: [], createdAt: now - 5 * H },
     { id: "b4", uid: "ruan", db: 141.9, hz: 46, cls: "Street", car: "Golf 7 GTI", setup: "2x 12\" subs, 2000 W", venue: "Zwartkops raceway", witnesses: ["lize", "thabo"], createdAt: now - 2 * H },
     { id: "b5", uid: "thabo", db: 129.5, hz: 55, cls: "Daily", car: "Pocket Rocket", setup: "Factory + 8\" under-seat", venue: "Zwartkops raceway", witnesses: ["ruan"], createdAt: now - 90 * 60000 },
-  ];
-  const explored = new Set();
-  for (const r of [ROUTES.me, [P(-25.79, 28.23), P(-25.7479, 28.1876), P(-25.7461, 28.229)], [P(-25.8, 28.2), P(-25.7555, 28.2333), P(-25.7826, 28.2757)]])
-    densify(r, 60).forEach((p) => explored.add(ghEncode(p.lat, p.lng)));
+  ], speed: [
+    { id: "s1", uid: "ruan", kmh: 218, cls: "Track", car: "Golf 7 GTI", method: "GPS (auto)", venue: "Zwartkops", witnesses: ["lize"], createdAt: now - 30 * H },
+    { id: "s2", uid: "thabo", kmh: 204, cls: "Track", car: "Pocket Rocket", method: "Dragy", venue: "Zwartkops", witnesses: ["ruan", "dewald"], createdAt: now - 30 * H },
+    { id: "s3", uid: "dewald", kmh: 171, cls: "Drag strip", car: "Big Grunt", method: "GPS (auto)", venue: "Tarlton", witnesses: [], createdAt: now - 6 * H },
+    { id: "s4", uid: "lize", kmh: 186, cls: "Track", car: "Rooi Gevaar", method: "GPS (auto)", venue: "Red Star Raceway", witnesses: ["thabo"], createdAt: now - 3 * H },
+  ] };
 
-  const subs = { members: new Set(), convoys: new Set(), vehicles: new Map(), bass: new Set() };
-  const emitBass = () => { const l = bass.map((b) => ({ ...b, witnesses: [...b.witnesses] })); subs.bass.forEach((cb) => cb(l)); };
+  const subs = { members: new Set(), convoys: new Set(), vehicles: new Map(), boards: { bass: new Set(), speed: new Set() } };
+  const emitBoard = (c) => { const l = boards[c].map((b) => ({ ...b, witnesses: [...b.witnesses] })); subs.boards[c].forEach((cb) => cb(l)); };
   const emitMembers = () => { const l = Object.entries(members).map(([id, m]) => ({ id, ...m })); subs.members.forEach((cb) => cb(l)); };
   const emitConvoys = () => { const l = convoys.filter((c) => c.active).map((c) => ({ ...c, memberIds: [...c.memberIds] })); subs.convoys.forEach((cb) => cb(l)); };
   const emitVehicles = (u) => (subs.vehicles.get(u) || new Set()).forEach((cb) => cb((vehicles[u] || []).map((v) => ({ ...v }))));
@@ -79,15 +81,13 @@ export function createDemoStore() {
     joinConvoy: (_c, id, u) => { const c = convoys.find((x) => x.id === id); if (c && !c.memberIds.includes(u)) c.memberIds.push(u); emitConvoys(); return ok(); },
     leaveConvoy: (_c, id, u) => { const c = convoys.find((x) => x.id === id); if (c) c.memberIds = c.memberIds.filter((x) => x !== u); emitConvoys(); return ok(); },
     endConvoy: (_c, id) => { const c = convoys.find((x) => x.id === id); if (c) c.active = false; emitConvoys(); return ok(); },
-    onBass: (_c, cb) => { subs.bass.add(cb); emitBass(); return () => subs.bass.delete(cb); },
-    addBass: (_c, data) => { const id = "b" + Date.now(); bass.push({ id, ...data }); emitBass(); return ok(id); },
-    witnessBass: (_c, id, u) => { const b = bass.find((x) => x.id === id); if (b && !b.witnesses.includes(u)) b.witnesses.push(u); emitBass(); return ok(); },
-    deleteBass: (_c, id) => { bass = bass.filter((x) => x.id !== id); emitBass(); return ok(); },
+    onBoard: (_c, coll, cb) => { subs.boards[coll].add(cb); emitBoard(coll); return () => subs.boards[coll].delete(cb); },
+    addBoard: (_c, coll, data) => { const id = coll[0] + Date.now(); boards[coll].push({ id, ...data }); emitBoard(coll); return ok(id); },
+    witnessBoard: (_c, coll, id, u) => { const b = boards[coll].find((x) => x.id === id); if (b && !b.witnesses.includes(u)) b.witnesses.push(u); emitBoard(coll); return ok(); },
+    deleteBoard: (_c, coll, id) => { boards[coll] = boards[coll].filter((x) => x.id !== id); emitBoard(coll); return ok(); },
     onVehicles: (u, cb) => { if (!subs.vehicles.has(u)) subs.vehicles.set(u, new Set()); subs.vehicles.get(u).add(cb); emitVehicles(u); return () => subs.vehicles.get(u).delete(cb); },
     getVehicles: (u) => ok((vehicles[u] || []).map((v) => ({ ...v }))),
     saveVehicle: (u, v) => { const l = vehicles[u] || (vehicles[u] = []); const i = l.findIndex((x) => x.id === v.id); if (i >= 0) l[i] = { ...v }; else l.push({ ...v }); emitVehicles(u); return ok(); },
     deleteVehicle: (u, id) => { vehicles[u] = (vehicles[u] || []).filter((x) => x.id !== id); emitVehicles(u); return ok(); },
-    loadExplored: () => ok(new Set(explored)),
-    addExplored: (_u, by) => { Object.values(by).flat().forEach((c) => explored.add(c)); return ok(); },
   };
 }

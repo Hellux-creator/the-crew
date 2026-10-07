@@ -1,5 +1,5 @@
 import { firebaseConfig } from "./firebase-config.js";
-import { haversine, ghEncode, ghBounds, cellAreaKm2, fmtKm, fmtAgo, CELL_PREC, PREFIX_PREC } from "./geo.js";
+import { haversine, fmtKm, fmtAgo } from "./geo.js";
 
 const $ = (s) => document.querySelector(s);
 const DEMO = !firebaseConfig.apiKey || firebaseConfig.apiKey.startsWith("PASTE");
@@ -8,11 +8,11 @@ const STALE_MS = 5 * 60 * 1000, GONE_MS = 2 * 60 * 60 * 1000;
 
 const S = {
   store: null, uid: null, profile: null, crew: null,
-  members: new Map(), convoys: [], myVehicles: [], bass: [], bassClass: "All",
-  explored: new Set(), pendingCells: new Set(),
-  pos: null, lastFix: null, lastSent: null, km: 0, kmDirty: false,
-  ghost: false, fog: false, view: "map", pick: false, pendingDest: null,
-  map: null, markers: new Map(), meMarker: null, convoyLayer: null, fogLayer: null,
+  members: new Map(), convoys: [], myVehicles: [],
+  boards: { bass: [], speed: [] }, boardClass: { bass: "All", speed: "All" },
+  pos: null, lastSent: null,
+  ghost: false, view: "map", pick: false, pendingDest: null,
+  map: null, markers: new Map(), meMarker: null, convoyLayer: null,
   unsubs: [], watchId: null, wakeLock: null, didFit: false,
 };
 
@@ -177,7 +177,6 @@ async function enterApp() {
   $("#in-me-callsign").value = S.profile.callsign;
   $("#in-me-phone").value = S.profile.phone || "";
   S.ghost = !!lsGet("ghost", false);
-  S.km = Number(lsGet(`km:${S.uid}`, 0)) || 0;
   renderGhost();
   initMap();
 
@@ -185,7 +184,6 @@ async function enterApp() {
     callsign: S.profile.callsign, phone: S.profile.phone || "", ghost: S.ghost,
     ...(S.ghost ? { lat: null, lng: null, speed: null } : {}),
   });
-  S.explored = await S.store.loadExplored(S.uid).catch(() => new Set());
 
   S.unsubs.push(S.store.onMembers(S.crew.id, (list) => {
     S.members = new Map(list.map((m) => [m.id, m]));
@@ -201,9 +199,9 @@ async function enterApp() {
     S.convoys = list.sort((a, b) => b.createdAt - a.createdAt);
     renderConvoyOverlay(); renderActiveView(); updateWakeLock();
   }));
-  S.unsubs.push(S.store.onBass(S.crew.id, (list) => {
-    S.bass = list;
-    if (S.view === "bass") renderBass();
+  for (const key of Object.keys(BOARDS)) S.unsubs.push(S.store.onBoard(S.crew.id, BOARDS[key].coll, (list) => {
+    S.boards[key] = list;
+    if (S.view === key) renderBoard(key);
   }));
   S.unsubs.push(S.store.onVehicles(S.uid, (list) => {
     S.myVehicles = list;
@@ -223,9 +221,7 @@ function initMap() {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   }).addTo(S.map);
-  S.map.createPane("fog").style.zIndex = 350;
   S.convoyLayer = L.layerGroup().addTo(S.map);
-  S.fogLayer = new FogLayer();
   S.map.on("click", (e) => {
     if (!S.pick) return;
     S.pendingDest = { lat: +e.latlng.lat.toFixed(6), lng: +e.latlng.lng.toFixed(6) };
@@ -235,47 +231,6 @@ function initMap() {
   });
 }
 
-const FogLayer = L.Layer.extend({
-  onAdd(map) {
-    this._map = map;
-    this._c = L.DomUtil.create("canvas", "fog-canvas", map.getPane("fog"));
-    this._c.style.pointerEvents = "none";
-    map.on("move zoom resize viewreset", this._draw, this);
-    this._draw();
-  },
-  onRemove(map) { map.off("move zoom resize viewreset", this._draw, this); this._c.remove(); },
-  redraw() { if (this._map) this._draw(); },
-  _draw() {
-    const map = this._map, c = this._c, size = map.getSize(), dpr = window.devicePixelRatio || 1;
-    L.DomUtil.setPosition(c, map.containerPointToLayerPoint([0, 0]));
-    c.width = size.x * dpr; c.height = size.y * dpr;
-    c.style.width = size.x + "px"; c.style.height = size.y + "px";
-    const ctx = c.getContext("2d");
-    ctx.scale(dpr, dpr);
-    ctx.fillStyle = "rgba(6,8,12,0.74)";
-    ctx.fillRect(0, 0, size.x, size.y);
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.fillStyle = "#000";
-    const vb = map.getBounds().pad(0.05);
-    const pad = map.getZoom() >= 14 ? 3 : 4;
-    for (const gh of S.explored) {
-      const b = ghBounds(gh);
-      if (b.n < vb.getSouth() || b.s > vb.getNorth() || b.e < vb.getWest() || b.w > vb.getEast()) continue;
-      const p1 = map.latLngToContainerPoint([b.n, b.w]), p2 = map.latLngToContainerPoint([b.s, b.e]);
-      const w = Math.max(5, p2.x - p1.x + pad), hgt = Math.max(5, p2.y - p1.y + pad);
-      ctx.fillRect(p1.x - pad / 2, p1.y - pad / 2, w, hgt);
-    }
-    ctx.globalCompositeOperation = "source-over";
-  },
-});
-
-function setFog(on) {
-  S.fog = on;
-  $("#btn-fog").setAttribute("aria-pressed", on);
-  if (on && !S.map.hasLayer(S.fogLayer)) S.fogLayer.addTo(S.map);
-  if (!on && S.map.hasLayer(S.fogLayer)) S.map.removeLayer(S.fogLayer);
-}
-$("#btn-fog").addEventListener("click", () => { setFog(!S.fog); toast(S.fog ? "Showing roads you've driven" : "Fog off"); });
 $("#btn-locate").addEventListener("click", () => {
   if (S.pos) S.map.flyTo([S.pos.lat, S.pos.lng], Math.max(S.map.getZoom(), 15), { duration: 0.6 });
   else toast("Waiting for GPS…");
@@ -349,22 +304,14 @@ function onFix(p) {
   gpsWarn("");
   const c = p.coords;
   const fix = { lat: c.latitude, lng: c.longitude, acc: c.accuracy, speed: c.speed ?? null, heading: c.heading ?? null, t: p.timestamp || Date.now() };
+  const rawSpeed = fix.speed;
   const first = !S.pos;
-  // distance driven: only trust clean fixes, ignore jitter and teleports
-  if (S.lastFix && fix.acc < 30) {
-    const d = haversine(S.lastFix, fix), dt = (fix.t - S.lastFix.t) / 1000;
-    if (d > 8 && d < 3000 && dt > 0 && d / dt < 70) { S.km += d / 1000; S.kmDirty = true; }
-  }
-  if (fix.acc < 40) S.lastFix = fix;
   if (fix.speed == null && S.pos) {
     const dt = (fix.t - S.pos.t) / 1000;
     if (dt > 0) fix.speed = haversine(S.pos, fix) / dt;
   }
   S.pos = fix;
-  if (fix.acc < 50) {
-    const cell = ghEncode(fix.lat, fix.lng, CELL_PREC);
-    if (!S.explored.has(cell)) { S.explored.add(cell); S.pendingCells.add(cell); if (S.fog) S.fogLayer.redraw(); }
-  }
+  speedFeed(fix, rawSpeed);
   renderMe();
   if (first) S.map.setView([fix.lat, fix.lng], 14);
   maybeSend();
@@ -385,26 +332,8 @@ function maybeSend(force = false) {
   }).catch(() => { S.lastSent = null; });
 }
 
-async function flushProgress() {
-  if (!S.crew) return;
-  if (S.pendingCells.size) {
-    const by = {};
-    for (const c of S.pendingCells) (by[c.slice(0, PREFIX_PREC)] ||= []).push(c);
-    const sent = new Set(S.pendingCells);
-    S.pendingCells.clear();
-    try { await S.store.addExplored(S.uid, by); }
-    catch { sent.forEach((c) => S.pendingCells.add(c)); }
-  }
-  lsSet(`km:${S.uid}`, S.km);
-  const me = S.members.get(S.uid);
-  const cells = S.explored.size, km = Math.round(S.km);
-  if (!me || me.stats?.cells !== cells || me.stats?.km !== km)
-    S.store.updateMember(S.crew.id, S.uid, { stats: { cells, km } }).catch(() => {});
-}
-setInterval(flushProgress, 30000);
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) flushProgress();
-  else { maybeSend(true); updateWakeLock(); }
+  if (!document.hidden) { maybeSend(true); updateWakeLock(); }
 });
 
 /* ---------------- ghost ---------------- */
@@ -431,10 +360,10 @@ $("#btn-ghost").addEventListener("click", async () => {
 
 /* ---------------- views ---------------- */
 function setView(v) {
-  if (!["map", "convoy", "garage", "explore", "bass", "crew"].includes(v)) v = "map";
+  if (!["map", "convoy", "garage", "speed", "bass", "crew"].includes(v)) v = "map";
   S.view = v; lsSet("view", v);
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === v));
-  for (const id of ["convoy", "garage", "explore", "bass", "crew"]) $(`#view-${id}`).hidden = id !== v;
+  for (const id of ["convoy", "garage", "speed", "bass", "crew"]) $(`#view-${id}`).hidden = id !== v;
   if (v === "map") setTimeout(() => S.map.invalidateSize(), 30);
   renderActiveView();
 }
@@ -442,8 +371,7 @@ document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () 
 function renderActiveView() {
   if (S.view === "convoy") renderConvoy();
   else if (S.view === "garage") renderGarage();
-  else if (S.view === "explore") renderExplore();
-  else if (S.view === "bass") renderBass();
+  else if (S.view === "speed" || S.view === "bass") { renderBoard(S.view); if (S.view === "speed") renderSession(); }
   else if (S.view === "crew") renderCrew();
 }
 
@@ -537,7 +465,7 @@ function showConvoyOnMap(c) {
 }
 
 async function updateWakeLock() {
-  const want = !!myConvoy() && !document.hidden;
+  const want = (!!myConvoy() || !!session) && !document.hidden;
   try {
     if (want && !S.wakeLock && navigator.wakeLock) { S.wakeLock = await navigator.wakeLock.request("screen"); S.wakeLock.addEventListener("release", () => (S.wakeLock = null)); }
     if (!want && S.wakeLock) { await S.wakeLock.release(); S.wakeLock = null; }
@@ -675,120 +603,224 @@ function syncActiveCar() {
   if (JSON.stringify(cur) !== JSON.stringify(car)) S.store.updateMember(S.crew.id, S.uid, { car }).catch(() => {});
 }
 
-/* ---------------- explore ---------------- */
-function renderExplore() {
-  const area = S.explored.size * cellAreaKm2(S.pos?.lat ?? -26);
-  const stat = (v, k) => h("div", { class: "stat" }, h("div", { class: "v" }, v), h("div", { class: "k" }, k));
-  $("#explore-stats").replaceChildren(
-    stat(S.explored.size.toLocaleString("en-ZA"), "Road tiles"),
-    stat(area < 10 ? area.toFixed(1) : Math.round(area).toLocaleString("en-ZA"), "km² cleared"),
-    stat(Math.round(S.km).toLocaleString("en-ZA"), "km driven"));
-  const rows = [...S.members.values()].map((m) => ({ id: m.id, name: m.id === S.uid ? `${S.profile.callsign} (you)` : m.callsign, cells: m.id === S.uid ? S.explored.size : m.stats?.cells || 0, km: m.id === S.uid ? Math.round(S.km) : m.stats?.km || 0 }))
-    .sort((a, b) => b.cells - a.cells);
-  const top = Math.max(1, rows[0]?.cells || 1);
-  $("#leaderboard").replaceChildren(...rows.map((r) => h("li", {}, avatar(r.id, r.name),
-    h("div", { class: "grow" }, h("div", { class: "n" }, r.name), h("div", { class: "bar" }, h("i", { style: `width:${(r.cells / top) * 100}%` }))),
-    h("div", { class: "num" }, r.cells.toLocaleString("en-ZA"), h("div", { class: "s", style: "margin-top:4px;color:var(--muted)" }, `${r.km.toLocaleString("en-ZA")} km`)))));
-}
-$("#btn-showfog").addEventListener("click", () => {
-  setView("map"); setFog(true);
-  if (S.explored.size) {
-    let s = 90, n = -90, w = 180, e = -180;
-    for (const g of S.explored) { const b = ghBounds(g); s = Math.min(s, b.s); n = Math.max(n, b.n); w = Math.min(w, b.w); e = Math.max(e, b.e); }
-    S.map.flyToBounds([[s, w], [n, e]], { padding: [30, 30], maxZoom: 14 });
-  } else toast("Go for a drive. Roads you drive will clear up here.");
-});
+/* ---------------- leaderboards (bass + top speed) ---------------- */
+const BOARDS = {
+  bass: {
+    coll: "bass", field: "db", unit: "dB", dec: 1, min: 60, max: 200,
+    classes: ["Daily", "Street", "Extreme"], best: "Loudest", noun: "score",
+    line: (b) => [b.car, b.hz ? `${b.hz} Hz` : "", b.venue],
+    sub: (b) => [b.car, b.setup],
+    extra: (b) => b.setup,
+    empty: "Do a sound test, then tap Log a score to put the first number on the board.",
+    badInput: "Enter the dB reading from the meter, e.g. 142.6",
+    read: () => ({ hz: (v => (v > 0 && v < 1000 ? Math.round(v) : null))(parseFloat($("#in-bass-hz").value.replace(",", "."))), setup: $("#in-bass-setup").value.trim() }),
+  },
+  speed: {
+    coll: "speed", field: "kmh", unit: "km/h", dec: 0, min: 20, max: 450,
+    classes: ["Track", "Drag strip", "Airfield", "Road"], best: "Fastest", noun: "run",
+    line: (b) => [b.car, b.method, b.venue],
+    sub: (b) => [b.car, b.venue],
+    extra: () => "",
+    empty: "Start a speed session before a run and your top speed lands here automatically, or log one manually with a photo as proof.",
+    badInput: "Enter the top speed in km/h, e.g. 212",
+    read: () => ({ method: $("#in-speed-method").value }),
+  },
+};
+const boardName = (uid) => (uid === S.uid ? `${S.profile.callsign} (you)` : S.members.get(uid)?.callsign || "Ex-member");
+const valText = (cfg, n, cls = "dbv") => h("span", { class: cls }, Number(n).toFixed(cfg.dec), h("small", {}, cfg.unit));
+const MEDALS = ["gold", "silver", "bronze"];
 
-/* ---------------- bass ---------------- */
-const BASS_CLASSES = ["All", "Daily", "Street", "Extreme"];
-const bassName = (uid) => (uid === S.uid ? `${S.profile.callsign} (you)` : S.members.get(uid)?.callsign || "Ex-member");
-const dbText = (n) => h("span", { class: "dbv" }, Number(n).toFixed(1), h("small", {}, "dB"));
+function renderBoard(key) {
+  const cfg = BOARDS[key], cur = S.boardClass[key];
+  const runs = (S.boards[key] || []).filter((b) => cur === "All" || b.cls === cur);
+  $(`#${key}-classes`).replaceChildren(...["All", ...cfg.classes].map((c) => h("button", { "aria-pressed": String(cur === c), onclick: () => { S.boardClass[key] = c; renderBoard(key); } }, c)));
 
-function renderBass() {
-  const runs = S.bass.filter((b) => S.bassClass === "All" || b.cls === S.bassClass);
-  $("#bass-classes").replaceChildren(...BASS_CLASSES.map((c) => h("button", { "aria-pressed": String(S.bassClass === c), onclick: () => { S.bassClass = c; renderBass(); } }, c)));
-
-  // best score per person
+  // each person's best
   const best = new Map();
-  for (const b of runs) { const cur = best.get(b.uid); if (!cur || b.db > cur.db) best.set(b.uid, b); }
-  const board = [...best.values()].sort((a, b) => b.db - a.db);
-  const champ = board[0];
-  $("#bass-champ").replaceChildren(champ ? h("div", { class: "champ" },
-    h("div", { class: "db" }, Number(champ.db).toFixed(1), h("small", {}, "dB")),
-    h("div", { class: "who" }, h("div", { class: "crown" }, S.bassClass === "All" ? "Loudest in the crew" : `Loudest · ${S.bassClass}`),
-      h("div", { class: "n" }, bassName(champ.uid)), h("div", { class: "s", style: "color:var(--muted)" }, [champ.car, champ.hz ? `${champ.hz} Hz` : ""].filter(Boolean).join(" · ")))) : "");
+  for (const b of runs) { const p = best.get(b.uid); if (!p || b[cfg.field] > p[cfg.field]) best.set(b.uid, b); }
+  const board = [...best.values()].sort((a, b) => b[cfg.field] - a[cfg.field]);
 
-  $("#bass-board").replaceChildren(...(board.length ? board.map((b) => h("li", {}, avatar(b.uid, bassName(b.uid)),
-    h("div", { class: "grow" }, h("div", { class: "n" }, bassName(b.uid), h("span", { class: "cls" }, b.cls)),
-      h("div", { class: "s" }, [b.car, b.setup].filter(Boolean).join(" · ") || "No setup listed")),
-    h("div", { class: "num" }, dbText(b.db), h("div", { class: "seen", style: "margin-top:5px" }, (b.witnesses || []).length ? `${b.witnesses.length} saw it` : "")))) :
-    [h("div", { class: "empty" }, h("div", { class: "big" }, "No scores yet"), h("p", {}, S.bassClass === "All" ? "Do a sound test, then tap Log a score to put the first number on the board." : `Nobody has logged a ${S.bassClass} score yet.`))]));
+  // podium: 2nd · 1st · 3rd
+  const podium = $(`#${key}-podium`);
+  if (!board.length) {
+    podium.replaceChildren(h("div", { class: "empty" }, h("div", { class: "big" }, `No ${cfg.noun}s yet`), h("p", {}, cur === "All" ? cfg.empty : `Nobody has logged a ${cur} ${cfg.noun} yet.`)));
+  } else {
+    const spot = (b, i) => b ? h("div", { class: `pod p${i + 1}` },
+      h("div", { class: `medal ${MEDALS[i]}`, "aria-label": `${["1st", "2nd", "3rd"][i]} place` }, String(i + 1)),
+      avatar(b.uid, boardName(b.uid)),
+      h("div", { class: "pod-name" }, boardName(b.uid)),
+      valText(cfg, b[cfg.field], "pod-val"),
+      h("div", { class: "pod-car" }, b.car || b.cls),
+      (b.witnesses || []).length ? h("div", { class: "seen" }, `${b.witnesses.length} saw it`) : null,
+      h("div", { class: "plinth" }, h("span", {}, String(i + 1)))) : h("div", { class: `pod p${i + 1} vacant` }, h("div", { class: "plinth" }, h("span", {}, String(i + 1))));
+    podium.replaceChildren(h("div", { class: "podium" }, spot(board[1], 1), spot(board[0], 0), spot(board[2], 2)));
+  }
 
+  // 4th place and down
+  const rest = board.slice(3);
+  $(`#${key}-rest-h`).hidden = !rest.length;
+  const ol = $(`#${key}-board`);
+  ol.setAttribute("start", "4");
+  ol.style.counterReset = "b 3";
+  ol.replaceChildren(...rest.map((b) => h("li", {}, avatar(b.uid, boardName(b.uid)),
+    h("div", { class: "grow" }, h("div", { class: "n" }, boardName(b.uid), h("span", { class: "cls" }, b.cls)),
+      h("div", { class: "s" }, cfg.sub(b).filter(Boolean).join(" · ") || "—")),
+    h("div", { class: "num" }, valText(cfg, b[cfg.field]), h("div", { class: "seen", style: "margin-top:5px" }, (b.witnesses || []).length ? `${b.witnesses.length} saw it` : "")))));
+
+  // every run, newest first
   const sorted = [...runs].sort((a, b) => b.createdAt - a.createdAt);
-  $("#bass-runs").replaceChildren(...sorted.map((b) => {
+  $(`#${key}-runs-h`).hidden = !sorted.length;
+  $(`#${key}-runs`).replaceChildren(...sorted.map((b) => {
     const mine = b.uid === S.uid;
     const seen = (b.witnesses || []).includes(S.uid);
     const names = (b.witnesses || []).map((w) => (w === S.uid ? "you" : S.members.get(w)?.callsign)).filter(Boolean);
     const acts = h("div", { class: "acts" });
-    if (!mine && !seen) acts.append(h("button", { class: "btn ghost", onclick: () => S.store.witnessBass(S.crew.id, b.id, S.uid).then(() => toast("Marked as witnessed")) }, "I saw it"));
+    if (!mine && !seen) acts.append(h("button", { class: "btn ghost", onclick: () => S.store.witnessBoard(S.crew.id, cfg.coll, b.id, S.uid).then(() => toast("Marked as witnessed")) }, "I saw it"));
     if (mine) acts.append(h("button", { class: "btn danger", onclick: (e) => {
       const btn = e.currentTarget;
       if (btn.dataset.armed !== "1") { btn.dataset.armed = "1"; btn.textContent = "Tap again to delete"; setTimeout(() => { btn.dataset.armed = ""; btn.textContent = "Delete"; }, 3000); return; }
-      S.store.deleteBass(S.crew.id, b.id).then(() => toast("Score deleted"));
+      S.store.deleteBoard(S.crew.id, cfg.coll, b.id).then(() => toast("Deleted"));
     } }, "Delete"));
+    const ex = cfg.extra(b);
     return h("li", {},
-      b.photo ? h("img", { class: "thumb", src: b.photo, alt: "Meter photo", onclick: () => showPhoto(b) }) : h("div", { class: "thumb" }, "No pic"),
+      b.photo ? h("img", { class: "thumb", src: b.photo, alt: "Proof photo", onclick: () => showPhoto(cfg, b) }) : h("div", { class: "thumb" }, "No pic"),
       h("div", { class: "grow" },
-        h("div", { class: "n" }, bassName(b.uid), h("span", { class: "cls" }, b.cls)),
-        h("div", { class: "s" }, [b.car, b.hz ? `${b.hz} Hz` : "", b.venue].filter(Boolean).join(" · ")),
-        h("div", { class: "s" }, fmtAgo(b.createdAt), b.setup ? ` · ${b.setup}` : ""),
+        h("div", { class: "n" }, boardName(b.uid), h("span", { class: "cls" }, b.cls)),
+        h("div", { class: "s" }, cfg.line(b).filter(Boolean).join(" · ")),
+        h("div", { class: "s" }, fmtAgo(b.createdAt), ex ? ` · ${ex}` : ""),
         names.length ? h("div", { class: "seen" }, `Seen by ${names.join(", ")}`) : null,
         acts.childNodes.length ? acts : null),
-      h("div", { class: "num" }, dbText(b.db)));
+      h("div", { class: "num" }, valText(cfg, b[cfg.field])));
   }));
 }
 
-function showPhoto(b) {
+function showPhoto(cfg, b) {
   $("#member-body").replaceChildren(
-    h("div", { class: "car-name", style: "margin-bottom:10px" }, `${bassName(b.uid)} · ${Number(b.db).toFixed(1)} dB`),
-    h("img", { class: "photo-big", src: b.photo, alt: "Meter photo" }));
+    h("div", { class: "car-name", style: "margin-bottom:10px" }, `${boardName(b.uid)} · ${Number(b[cfg.field]).toFixed(cfg.dec)} ${cfg.unit}`),
+    h("img", { class: "photo-big", src: b.photo, alt: "Proof photo" }));
   dlgMember.showModal();
 }
 
-const dlgBass = $("#dlg-bass");
-let bassPhoto = "";
-$("#btn-addbass").addEventListener("click", () => {
-  $("#form-bass").reset();
-  bassPhoto = "";
-  $("#bass-photo-preview").hidden = true;
+for (const key of Object.keys(BOARDS)) {
+  const cfg = BOARDS[key];
+  const dlg = $(`#dlg-${key}`);
+  let photo = "";
+  $(`#btn-add${key}`).addEventListener("click", () => {
+    $(`#form-${key}`).reset();
+    photo = "";
+    $(`#${key}-photo-preview`).hidden = true;
+    const active = S.myVehicles.find((v) => v.active);
+    if (active) $(`#in-${key}-car`).value = active.name;
+    if (S.boardClass[key] !== "All") $(`#in-${key}-class`).value = S.boardClass[key];
+    dlg.showModal();
+  });
+  $(`#btn-${key}-cancel`).addEventListener("click", () => dlg.close());
+  $(`#in-${key}-photo`).addEventListener("change", async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try { photo = await shrinkImage(f, 720, 0.72); const img = $(`#${key}-photo-preview`); img.src = photo; img.hidden = false; }
+    catch { toast("Couldn't read that photo. Try a JPG or PNG."); }
+  });
+  $(`#form-${key}`).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const v = parseFloat($(`#in-${key}-val`).value.replace(",", "."));
+    if (!(v > cfg.min && v < cfg.max)) { toast(cfg.badInput); return; }
+    const val = cfg.dec ? Math.round(v * 10) / 10 : Math.round(v);
+    try {
+      await S.store.addBoard(S.crew.id, cfg.coll, {
+        uid: S.uid, [cfg.field]: val, cls: $(`#in-${key}-class`).value, car: $(`#in-${key}-car`).value.trim(),
+        venue: $(`#in-${key}-venue`).value.trim(), photo, witnesses: [], createdAt: Date.now(), ...cfg.read(),
+      });
+      dlg.close();
+      const top = Math.max(0, ...(S.boards[key] || []).filter((b) => b.uid !== S.uid).map((b) => b[cfg.field]));
+      const txt = `${val.toFixed(cfg.dec)} ${cfg.unit}`;
+      toast(val > top ? `${txt}. That's the new crew record!` : `${txt} logged`);
+    } catch { toast("Couldn't save. The photo might be too big; try another one."); }
+  });
+}
+
+/* ---------------- automatic top speed (GPS speed session) ---------------- */
+// A run only counts when the speed holds across 3 clean GPS readings in a row,
+// so one-off GPS spikes never reach the board.
+const SESSION_MAX_MS = 3 * 60 * 60 * 1000;
+let session = lsGet("speedSession", null);
+let recent = []; // last clean samples [{t, v}]
+if (session && Date.now() - session.start > SESSION_MAX_MS) session = null;
+
+function speedFeed(fix, raw) {
+  if (!session) return;
+  if (Date.now() - session.start > SESSION_MAX_MS) { endSession(); return; }
+  const v = raw;
+  session.now = v != null ? v : 0;
+  if (v == null || fix.acc > 20 || v < 0 || v > 125) { recent = []; renderSession(); return; }
+  const prev = recent[recent.length - 1];
+  if (prev) {
+    const dt = (fix.t - prev.t) / 1000;
+    if (dt <= 0) return;
+    if (dt > 5 || Math.abs(v - prev.v) / dt > 15) recent = []; // gap in signal or impossible jump: start over
+  }
+  recent.push({ t: fix.t, v });
+  if (recent.length > 3) recent.shift();
+  if (recent.length === 3) {
+    const held = Math.min(...recent.map((r) => r.v));
+    if (held > session.top) { session.top = held; lsSet("speedSession", session); }
+  }
+  renderSession();
+}
+
+function startSession() {
   const active = S.myVehicles.find((v) => v.active);
-  if (active) $("#in-bass-car").value = active.name;
-  if (S.bassClass !== "All") $("#in-bass-class").value = S.bassClass;
-  dlgBass.showModal();
-});
-$("#btn-bass-cancel").addEventListener("click", () => dlgBass.close());
-$("#in-bass-photo").addEventListener("change", async (e) => {
-  const f = e.target.files[0];
-  if (!f) return;
-  try { bassPhoto = await shrinkImage(f, 720, 0.72); const img = $("#bass-photo-preview"); img.src = bassPhoto; img.hidden = false; }
-  catch { toast("Couldn't read that photo. Try a JPG or PNG."); }
-});
-$("#form-bass").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const dbv = parseFloat($("#in-bass-db").value.replace(",", "."));
-  if (!(dbv > 60 && dbv < 200)) { toast("Enter the dB reading from the meter, e.g. 142.6"); return; }
-  const hz = parseFloat($("#in-bass-hz").value.replace(",", "."));
+  session = { start: Date.now(), top: 0, now: 0, cls: $("#in-sess-class").value, venue: $("#in-sess-venue").value.trim(), car: active?.name || "" };
+  recent = [];
+  lsSet("speedSession", session);
+  updateWakeLock();
+  renderSession();
+  toast("Speed session started. Keep THE CREW open on screen.");
+}
+
+async function endSession() {
+  const s = session;
+  session = null; recent = [];
+  lsSet("speedSession", null);
+  updateWakeLock();
+  renderSession();
+  if (!s) return;
+  const kmhTop = Math.round(s.top * 3.6);
+  if (kmhTop < 20) { toast("Session ended. No clean GPS run was recorded."); return; }
   try {
-    await S.store.addBass(S.crew.id, {
-      uid: S.uid, db: Math.round(dbv * 10) / 10, hz: hz > 0 && hz < 1000 ? Math.round(hz) : null,
-      cls: $("#in-bass-class").value, car: $("#in-bass-car").value.trim(), setup: $("#in-bass-setup").value.trim(),
-      venue: $("#in-bass-venue").value.trim(), photo: bassPhoto, witnesses: [], createdAt: Date.now(),
-    });
-    dlgBass.close();
-    const top = Math.max(0, ...S.bass.filter((b) => b.uid !== S.uid).map((b) => b.db));
-    toast(dbv > top ? `${dbv.toFixed(1)} dB. That's the new crew record!` : `${dbv.toFixed(1)} dB logged`);
-  } catch { toast("Couldn't save. The photo might be too big; try another one."); }
-});
+    await S.store.addBoard(S.crew.id, "speed", { uid: S.uid, kmh: kmhTop, cls: s.cls, car: s.car, venue: s.venue, method: "GPS (auto)", photo: "", witnesses: [], createdAt: Date.now() });
+    const top = Math.max(0, ...(S.boards.speed || []).filter((b) => b.uid !== S.uid).map((b) => b.kmh));
+    toast(kmhTop > top ? `${kmhTop} km/h. That's the new crew record!` : `${kmhTop} km/h saved to the board`);
+  } catch { toast(`Couldn't save your ${kmhTop} km/h run. Check your signal and log it manually.`); }
+}
+
+function renderSession() {
+  const box = $("#speed-session");
+  if (!box || S.view !== "speed") return;
+  if (!session) {
+    box.className = "session";
+    box.replaceChildren(
+      h("div", {}, h("div", { class: "car-name" }, "Speed session"),
+        h("div", { class: "s", style: "color:var(--muted);margin-top:4px" }, "Start it before a run. Your top speed is recorded automatically from GPS and saved to the board when you end it.")),
+      h("div", { class: "grid2" },
+        h("div", {}, h("label", { class: "lbl", for: "in-sess-class" }, "Where"),
+          h("select", { id: "in-sess-class" }, ...BOARDS.speed.classes.map((c) => h("option", {}, c)))),
+        h("div", {}, h("label", { class: "lbl", for: "in-sess-venue" }, "Venue"), h("input", { id: "in-sess-venue", maxlength: "40", placeholder: "Zwartkops" }))),
+      h("button", { class: "btn primary wide", onclick: startSession }, "Start speed session"));
+    return;
+  }
+  const mins = Math.floor((Date.now() - session.start) / 60000);
+  box.className = "session live";
+  box.replaceChildren(
+    h("div", { class: "s", style: "color:var(--fg);font-weight:600" }, h("span", { class: "recdot" }), `Recording · ${session.venue || session.cls}`),
+    h("div", { class: "gauge" },
+      h("div", { class: "now" }, String(Math.round((session.now || 0) * 3.6)), h("small", {}, "km/h")),
+      h("div", { class: "meta" },
+        h("div", {}, h("b", {}, String(Math.round(session.top * 3.6))), "session top"),
+        h("div", {}, h("b", {}, `${mins}`), "minutes"))),
+    ...(S.pos ? [] : [h("div", { class: "s", style: "color:var(--bad)" }, "Waiting for GPS…")]),
+    h("button", { class: "btn danger wide", onclick: endSession }, "End session and save"));
+}
 
 /* ---------------- crew ---------------- */
 function renderCrew() {
@@ -834,7 +866,7 @@ $("#btn-leave").addEventListener("click", async (e) => {
   b.dataset.armed = ""; b.textContent = "Leave crew";
   route();
 });
-$("#btn-signout").addEventListener("click", async () => { await flushProgress(); teardown(); S.store.signOut(); });
+$("#btn-signout").addEventListener("click", () => { teardown(); S.store.signOut(); });
 
 // member sheet
 const dlgMember = $("#dlg-member");

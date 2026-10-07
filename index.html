@@ -120,9 +120,6 @@
   <main id="view-map" class="view map-view">
     <div id="map"></div>
     <div class="map-tools">
-      <button id="btn-fog" class="fab small" aria-pressed="false" title="Show explored roads (fog of war)">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h13M6 12h15M3 16h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-      </button>
       <button id="btn-crewfit" class="fab small" title="Show whole crew">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="9" r="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="16" cy="9" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 19c0-3 2.5-5 5-5s5 2 5 5M11 19c0-3 2.5-5 5-5s5 2 5 5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
       </button>
@@ -149,23 +146,25 @@
     <div id="garage-list" class="cars"></div>
   </section>
 
-  <section id="view-explore" class="view sheet" hidden>
-    <h2 class="h">Explore</h2>
-    <p class="sub">Every stretch of road you drive gets cleared on your map. Drive new roads to climb the board.</p>
-    <div class="stats" id="explore-stats"></div>
-    <button id="btn-showfog" class="btn ghost wide">Show my explored map</button>
-    <h3 class="h3">Crew leaderboard</h3>
-    <ol id="leaderboard" class="board"></ol>
+  <section id="view-speed" class="view sheet" hidden>
+    <div class="h-row"><h2 class="h">Top Speed</h2><button id="btn-addspeed" class="btn ghost sm">Log manually</button></div>
+    <div id="speed-session"></div>
+    <div class="chips" id="speed-classes" role="group" aria-label="Class"></div>
+    <div id="speed-podium"></div>
+    <h3 class="h3" id="speed-rest-h" hidden>The rest</h3>
+    <ol id="speed-board" class="board"></ol>
+    <h3 class="h3" id="speed-runs-h" hidden>All runs</h3>
+    <ul id="speed-runs" class="runs"></ul>
   </section>
 
   <section id="view-bass" class="view sheet" hidden>
     <div class="h-row"><h2 class="h">Bass</h2><button id="btn-addbass" class="btn primary sm">Log a score</button></div>
     <p class="sub">Sound-off scores from the crew. Snap the meter so everyone can see it, and get a mate to tap "I saw it".</p>
-    <div id="bass-champ"></div>
     <div class="chips" id="bass-classes" role="group" aria-label="Class"></div>
-    <h3 class="h3">Leaderboard</h3>
+    <div id="bass-podium"></div>
+    <h3 class="h3" id="bass-rest-h" hidden>The rest</h3>
     <ol id="bass-board" class="board"></ol>
-    <h3 class="h3">All runs</h3>
+    <h3 class="h3" id="bass-runs-h" hidden>All runs</h3>
     <ul id="bass-runs" class="runs"></ul>
   </section>
 
@@ -198,7 +197,7 @@
     <button class="tab active" data-view="map" role="tab"><svg viewBox="0 0 24 24"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Zm0 0v14m6-12v14" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Map</button>
     <button class="tab" data-view="convoy" role="tab"><svg viewBox="0 0 24 24"><path d="M4 17h2m12 0h2M3 13l2-5h10l3 5M3 13h18v4H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="7" cy="17" r="2" fill="currentColor"/><circle cx="17" cy="17" r="2" fill="currentColor"/></svg>Convoy</button>
     <button class="tab" data-view="garage" role="tab"><svg viewBox="0 0 24 24"><path d="M3 10 12 4l9 6v10H3z M7 20v-6h10v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Garage</button>
-    <button class="tab" data-view="explore" role="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15.5 8.5-2 5-5 2 2-5z" fill="currentColor"/></svg>Explore</button>
+    <button class="tab" data-view="speed" role="tab"><svg viewBox="0 0 24 24"><path d="M4 17a8 8 0 1 1 16 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="m12 17 4.5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.6" fill="currentColor"/></svg>Speed</button>
     <button class="tab" data-view="bass" role="tab"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="14" r="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="14" r="1" fill="currentColor"/><circle cx="12" cy="7" r="1.3" fill="currentColor"/></svg>Bass</button>
     <button class="tab" data-view="crew" role="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M2 20c0-4 3-6 7-6s7 2 7 6M16 4a3.5 3.5 0 0 1 0 7M18 14c2.5.5 4 2.5 4 6" fill="none" stroke="currentColor" stroke-width="2"/></svg>Crew</button>
   </nav>
@@ -260,7 +259,7 @@
   <form id="form-bass" method="dialog" class="stack">
     <h3 class="h3">Log a bass score</h3>
     <div class="grid2">
-      <div><label class="lbl" for="in-bass-db">Score (dB)</label><input id="in-bass-db" inputmode="decimal" placeholder="142.6" required></div>
+      <div><label class="lbl" for="in-bass-val">Score (dB)</label><input id="in-bass-val" inputmode="decimal" placeholder="142.6" required></div>
       <div><label class="lbl" for="in-bass-class">Class</label>
         <select id="in-bass-class"><option>Daily</option><option>Street</option><option>Extreme</option></select></div>
       <div><label class="lbl" for="in-bass-hz">Frequency (Hz)</label><input id="in-bass-hz" inputmode="decimal" placeholder="45"></div>
@@ -279,6 +278,32 @@
       <span class="spacer"></span>
       <button type="button" id="btn-bass-cancel" class="btn ghost sm">Cancel</button>
       <button type="submit" class="btn primary sm">Save score</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-speed" class="dlg">
+  <form id="form-speed" method="dialog" class="stack">
+    <h3 class="h3">Log a top speed</h3>
+    <div class="grid2">
+      <div><label class="lbl" for="in-speed-val">Top speed (km/h)</label><input id="in-speed-val" inputmode="numeric" placeholder="212" required></div>
+      <div><label class="lbl" for="in-speed-class">Where</label>
+        <select id="in-speed-class"><option>Track</option><option>Drag strip</option><option>Airfield</option><option>Road</option></select></div>
+      <div><label class="lbl" for="in-speed-method">Measured with</label>
+        <select id="in-speed-method"><option>Dragy</option><option>GPS app</option><option>Dash photo</option><option>Other</option></select></div>
+      <div><label class="lbl" for="in-speed-car">Car</label><input id="in-speed-car" maxlength="30" placeholder="Hellux"></div>
+    </div>
+    <label class="lbl" for="in-speed-venue">Venue</label>
+    <input id="in-speed-venue" maxlength="40" placeholder="Zwartkops Raceway">
+    <div class="photo-pick">
+      <img id="speed-photo-preview" alt="" hidden>
+      <label class="btn ghost sm" for="in-speed-photo">Add photo as proof</label>
+      <input id="in-speed-photo" type="file" accept="image/*" hidden>
+    </div>
+    <div class="row-end">
+      <span class="spacer"></span>
+      <button type="button" id="btn-speed-cancel" class="btn ghost sm">Cancel</button>
+      <button type="submit" class="btn primary sm">Save run</button>
     </div>
   </form>
 </dialog>
