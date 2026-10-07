@@ -257,3 +257,45 @@ select{font:inherit;color:var(--fg);background:var(--panel-2);border:1px solid v
 .spin-edit .spin{border-radius:10px;overflow:hidden}
 .spin-stage{border-radius:10px;overflow:hidden;background:#000}
 .spin-stage video{display:block;width:100%;max-height:220px;object-fit:contain}
+
+/* ---------- segments ---------- */
+.seg{display:grid;grid-template-columns:1fr 1fr;background:var(--panel-2);border:1px solid var(--line);border-radius:12px;padding:4px;margin:6px 0 16px}
+.seg button{border:0;background:none;border-radius:9px;padding:9px;font-weight:600;color:var(--muted)}
+.seg button[aria-selected="true"]{background:var(--accent);color:var(--accent-ink)}
+
+/* ---------- meets ---------- */
+.meets{display:flex;flex-direction:column;gap:12px}
+.meet{display:flex;gap:14px;align-items:stretch;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px;text-align:left;width:100%}
+.meet.soon{border-color:var(--accent)}
+.cal{flex:none;width:58px;border-radius:10px;background:var(--panel-2);border:1px solid var(--line);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:6px 0}
+.cal .m{font:600 11px/1 var(--f-body);letter-spacing:.1em;text-transform:uppercase;color:var(--accent)}
+.cal .d{font:800 28px/1 var(--f-display)}
+.cal .w{font-size:11px;color:var(--muted)}
+.meet .t{font:800 21px/1.05 var(--f-display);text-transform:uppercase;letter-spacing:.02em}
+.meet .s{color:var(--muted);font-size:13px;margin-top:3px}
+.countdown{display:inline-block;margin-top:6px;font:500 12px/1 var(--f-mono);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 50%,transparent);border-radius:999px;padding:4px 8px}
+.going{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
+.going .av{width:24px;height:24px;font-size:12px;margin-left:-8px;border:2px solid var(--panel)}
+.going .av:first-child{margin-left:0}
+.going span{font-size:12px;color:var(--muted)}
+.meet-pin{transform:translate(-50%,-100%);display:flex;flex-direction:column;align-items:center}
+.meet-pin .b{background:var(--accent);color:var(--accent-ink);border-radius:10px;padding:4px 8px;font:800 13px/1.1 var(--f-display);text-transform:uppercase;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,.45);border:2px solid #0d1117}
+.meet-pin .b small{display:block;font:600 10px/1 var(--f-body);text-transform:none;opacity:.8}
+.meet-pin .tip{width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-top:9px solid var(--accent)}
+
+/* ---------- mod log ---------- */
+.log-btn{margin-top:8px;align-self:flex-start}
+.due{font-size:12px;border-radius:6px;padding:3px 7px;margin-top:6px;align-self:flex-start;border:1px solid var(--line);color:var(--muted)}
+.due.warn{color:#ffb4b4;border-color:#6b2a2a;background:#2b1414}
+.log-sum{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0}
+.log-list{list-style:none;margin:0;padding:0}
+.log-list li{display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+.log-type{flex:none;font:600 10px/1 var(--f-body);letter-spacing:.08em;text-transform:uppercase;border-radius:5px;padding:5px 6px;height:fit-content;border:1px solid var(--line);color:var(--muted);min-width:58px;text-align:center}
+.log-type.Mod{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 55%,transparent)}
+.log-type.Service{color:var(--good);border-color:color-mix(in srgb,var(--good) 50%,transparent)}
+.log-type.Repair{color:#ff9b9b;border-color:#6b2a2a}
+.log-del{background:none;border:0;color:var(--muted);font-size:12px;text-decoration:underline;padding:0;margin-top:4px}
+
+/* ---------- home ghost ---------- */
+#home-ghost .grid2>div{display:flex;flex-direction:column;gap:6px}
+.home-tag{transform:translate(-50%,-50%);background:#8b7cf0;color:#fff;font-size:11px;font-weight:700;border-radius:999px;padding:3px 9px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.35)}

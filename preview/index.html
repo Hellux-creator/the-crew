@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="theme-color" content="#0d1117">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="THE CREW">
+<title>THE CREW · Preview</title>
+
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ============ INSTALL (shown when opened in a browser) ============ -->
+<section id="install" class="onboard" hidden>
+  <div class="ob-inner">
+    <div class="brand-lockup">
+      <img src="icons/icon-192.png" alt="" class="brand-mark">
+      <h1 class="brand">THE CREW</h1>
+      <p class="tag">Your crew. Live on the map.</p>
+    </div>
+    <ul class="pitch">
+      <li><b>Live map</b> See your mates driving, with ghost mode when you want to vanish.</li>
+      <li><b>Convoys</b> Drop a pin, everyone sees who's how far out.</li>
+      <li><b>Bass board</b> Log your dB, get it witnessed, own the leaderboard.</li>
+    </ul>
+
+    <div id="inst-android" class="ob-step" hidden>
+      <button id="btn-install" class="btn primary wide">Install THE CREW</button>
+      <p class="fine">Free. It goes on your home screen like any other app.</p>
+    </div>
+
+    <div id="inst-ios" class="ob-step" hidden>
+      <div class="lbl">Install on iPhone</div>
+      <ol class="steps">
+        <li>Open this page in <b>Safari</b>.</li>
+        <li>Tap the <b>Share</b> button <svg class="inl" viewBox="0 0 24 24" aria-label="Share icon"><path d="M12 3v12M8 7l4-4 4 4M5 11v9h14v-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> at the bottom.</li>
+        <li>Scroll down and tap <b>Add to Home Screen</b>, then <b>Add</b>.</li>
+        <li>Open <b>THE CREW</b> from your home screen.</li>
+      </ol>
+    </div>
+
+    <div id="inst-other" class="ob-step" hidden>
+      <div class="lbl">Install on your phone</div>
+      <p class="fine" style="font-size:15px">Open your browser menu (⋮ or Share) and choose <b>Install app</b> or <b>Add to Home Screen</b>.</p>
+    </div>
+
+    <button id="btn-skip-install" class="linkish">Continue in the browser instead</button>
+  </div>
+</section>
+
+<!-- ============ ONBOARDING ============ -->
+<section id="onboard" class="onboard" hidden>
+  <div class="ob-inner">
+    <div class="brand-lockup">
+      <img src="icons/icon-192.png" alt="" class="brand-mark">
+      <h1 class="brand">THE CREW</h1>
+      <p class="tag">Your crew. Live on the map.</p>
+    </div>
+
+    <div id="ob-signin" class="ob-step">
+      <button id="btn-google" class="btn primary wide">Get started</button>
+      <p class="fine">No email or password. Just your name, number and car.</p>
+    </div>
+
+    <form id="ob-callsign" class="ob-step" hidden>
+      <label for="in-callsign" class="lbl">Name</label>
+      <input id="in-callsign" maxlength="20" placeholder="e.g. Stiaan" required autocomplete="given-name">
+      <label for="in-phone" class="lbl">Phone number</label>
+      <input id="in-phone" type="tel" maxlength="16" placeholder="082 123 4567" required autocomplete="tel">
+      <label for="in-ob-make" class="lbl">Your car</label>
+      <div class="grid3">
+        <input id="in-ob-make" maxlength="30" placeholder="Make" required aria-label="Make">
+        <input id="in-ob-model" maxlength="30" placeholder="Model" required aria-label="Model">
+        <input id="in-ob-year" inputmode="numeric" maxlength="4" placeholder="Year" required aria-label="Year">
+      </div>
+      <p class="fine">Only people in your crew see your number.</p>
+      <button class="btn primary wide" type="submit">Continue</button>
+    </form>
+
+    <div id="ob-crew" class="ob-step" hidden>
+      <form id="form-join" class="stack">
+        <label for="in-code" class="lbl">Join a crew with an invite code</label>
+        <input id="in-code" maxlength="6" placeholder="ABC123" autocapitalize="characters" autocomplete="off">
+        <button class="btn primary wide" type="submit">Join crew</button>
+      </form>
+      <div class="or"><span>or</span></div>
+      <form id="form-create" class="stack">
+        <label for="in-crewname" class="lbl">Start a new crew</label>
+        <input id="in-crewname" maxlength="30" placeholder="e.g. Pretoria Night Runners">
+        <button class="btn ghost wide" type="submit">Create crew</button>
+      </form>
+    </div>
+    <p id="ob-error" class="err" hidden></p>
+  </div>
+</section>
+
+<!-- ============ APP ============ -->
+<div id="app" class="app" hidden>
+  <header class="topbar">
+    <div class="crewname"><span class="dot" id="live-dot"></span><span id="crew-title">Crew</span></div>
+    <button id="btn-ghost" class="chip" aria-pressed="false" title="Ghost mode hides you from the crew map">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a8 8 0 0 0-8 8v12l3-2 2.5 2 2.5-2 2.5 2 2.5-2 3 2V10a8 8 0 0 0-8-8Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="9" cy="10" r="1.5" fill="currentColor"/><circle cx="15" cy="10" r="1.5" fill="currentColor"/></svg>
+      <span id="ghost-label">Visible</span>
+    </button>
+  </header>
+
+  <div id="demo-banner" class="demo" hidden>PREVIEW · pretend crew. New: Meets, Mod log, Hide me at home. Your live app is unchanged.</div>
+
+  <!-- MAP VIEW (always mounted, sits behind other views) -->
+  <main id="view-map" class="view map-view">
+    <div id="map"></div>
+    <div id="fog-stat" class="fog-stat" hidden></div>
+    <div class="map-tools">
+      <button id="btn-theme" class="fab small" aria-label="Switch map between day and night"></button>
+      <button id="btn-fog" class="fab small" aria-pressed="false" title="Drive to reveal: show the roads you've driven">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>
+      </button>
+      <button id="btn-crewfit" class="fab small" title="Show whole crew">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="9" r="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="16" cy="9" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 19c0-3 2.5-5 5-5s5 2 5 5M11 19c0-3 2.5-5 5-5s5 2 5 5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+      </button>
+      <button id="btn-locate" class="fab small" title="Centre on me">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+      </button>
+    </div>
+    <div id="pick-banner" class="pick-banner" hidden>
+      <span>Tap the map to set the convoy destination</span>
+      <button id="btn-pick-cancel" class="btn ghost sm">Cancel</button>
+    </div>
+    <div id="convoy-strip" class="convoy-strip" hidden></div>
+    <div id="gps-warn" class="gps-warn" hidden></div>
+  </main>
+
+  <!-- SHEET VIEWS -->
+  <section id="view-convoy" class="view sheet" hidden>
+    <h2 class="h">Meets &amp; Convoys</h2>
+    <div class="seg" role="tablist" aria-label="Meets or convoys">
+      <button id="seg-meets" role="tab" aria-selected="true">Meets</button>
+      <button id="seg-convoys" role="tab" aria-selected="false">Convoys</button>
+    </div>
+    <div id="meets-body"></div>
+    <div id="convoy-body" hidden></div>
+  </section>
+
+  <section id="view-garage" class="view sheet" hidden>
+    <div class="h-row"><h2 class="h">Garage</h2><button id="btn-addcar" class="btn primary sm">Add car</button></div>
+    <div id="garage-list" class="cars"></div>
+  </section>
+
+  <section id="view-explore" class="view sheet" hidden>
+    <h2 class="h">Explore</h2>
+    <p class="sub">Every road you drive lights up on your map. Cover new ground to climb the board.</p>
+    <div class="stats" id="explore-stats"></div>
+    <button id="btn-showfog" class="btn ghost wide">Show my revealed map</button>
+    <div id="explore-podium"></div>
+    <h3 class="h3" id="explore-rest-h" hidden>The rest</h3>
+    <ol id="explore-board" class="board"></ol>
+  </section>
+
+  <section id="view-speed" class="view sheet" hidden>
+    <div class="h-row"><h2 class="h">Top Speed</h2><button id="btn-addspeed" class="btn ghost sm">Log manually</button></div>
+    <div id="speed-session"></div>
+    <div class="chips" id="speed-classes" role="group" aria-label="Class"></div>
+    <div id="speed-podium"></div>
+    <h3 class="h3" id="speed-rest-h" hidden>The rest</h3>
+    <ol id="speed-board" class="board"></ol>
+    <h3 class="h3" id="speed-runs-h" hidden>All runs</h3>
+    <ul id="speed-runs" class="runs"></ul>
+  </section>
+
+  <section id="view-bass" class="view sheet" hidden>
+    <div class="h-row"><h2 class="h">Bass</h2><button id="btn-addbass" class="btn primary sm">Log a score</button></div>
+    <p class="sub">Sound-off scores from the crew. Snap the meter so everyone can see it, and get a mate to tap "I saw it".</p>
+    <div class="chips" id="bass-classes" role="group" aria-label="Class"></div>
+    <div id="bass-podium"></div>
+    <h3 class="h3" id="bass-rest-h" hidden>The rest</h3>
+    <ol id="bass-board" class="board"></ol>
+    <h3 class="h3" id="bass-runs-h" hidden>All runs</h3>
+    <ul id="bass-runs" class="runs"></ul>
+  </section>
+
+  <section id="view-crew" class="view sheet" hidden>
+    <h2 class="h">Crew</h2>
+    <div class="invite">
+      <div>
+        <div class="lbl">Invite code</div>
+        <div id="invite-code" class="code">------</div>
+      </div>
+      <button id="btn-share" class="btn primary sm">Share</button>
+    </div>
+    <ul id="crew-list" class="crew-list"></ul>
+    <h3 class="h3">You</h3>
+    <form id="form-me" class="stack">
+      <label for="in-me-callsign" class="lbl">Name</label>
+      <input id="in-me-callsign" maxlength="20">
+      <label for="in-me-phone" class="lbl">Phone number</label>
+      <input id="in-me-phone" type="tel" maxlength="16">
+      <button class="btn ghost sm" type="submit">Save</button>
+    </form>
+    <h3 class="h3">Hide me at home</h3>
+    <div class="card stack" id="home-ghost">
+      <p class="fine" style="font-size:14px">Your pin disappears from the crew map whenever you're near home, so nobody can see where you live. Your home spot is saved only on this phone, never sent to anyone.</p>
+      <div class="grid2">
+        <div><label class="lbl" for="in-home-radius">Hide within</label>
+          <select id="in-home-radius"><option value="300">300 m</option><option value="500" selected>500 m</option><option value="1000">1 km</option><option value="2000">2 km</option></select></div>
+        <div style="justify-content:flex-end"><label class="check" style="margin-top:22px"><input type="checkbox" id="in-home-on"> Turned on</label></div>
+      </div>
+      <p class="fine" id="home-status">No home spot set yet.</p>
+      <div class="btn-row">
+        <button type="button" id="btn-home-here" class="btn primary sm">Use where I am now</button>
+        <button type="button" id="btn-home-pick" class="btn ghost sm">Pick on map</button>
+        <button type="button" id="btn-home-clear" class="btn danger sm" hidden>Clear</button>
+      </div>
+    </div>
+
+    <div class="danger-row">
+      <button id="btn-leave" class="btn danger sm">Leave crew</button>
+      <button id="btn-signout" class="btn ghost sm">Sign out</button>
+    </div>
+    <p class="fine">Location is shared only with people in this crew and only while THE CREW is open. Ghost mode removes your spot from the map straight away.</p>
+  </section>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-view="map" role="tab"><svg viewBox="0 0 24 24"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Zm0 0v14m6-12v14" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Map</button>
+    <button class="tab" data-view="convoy" role="tab"><svg viewBox="0 0 24 24"><path d="M4 17h2m12 0h2M3 13l2-5h10l3 5M3 13h18v4H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="7" cy="17" r="2" fill="currentColor"/><circle cx="17" cy="17" r="2" fill="currentColor"/></svg>Meets</button>
+    <button class="tab" data-view="garage" role="tab"><svg viewBox="0 0 24 24"><path d="M3 10 12 4l9 6v10H3z M7 20v-6h10v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Garage</button>
+    <button class="tab" data-view="explore" role="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15.5 8.5-2 5-5 2 2-5z" fill="currentColor"/></svg>Explore</button>
+    <button class="tab" data-view="speed" role="tab"><svg viewBox="0 0 24 24"><path d="M4 17a8 8 0 1 1 16 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="m12 17 4.5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.6" fill="currentColor"/></svg>Speed</button>
+    <button class="tab" data-view="bass" role="tab"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="14" r="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="14" r="1" fill="currentColor"/><circle cx="12" cy="7" r="1.3" fill="currentColor"/></svg>Bass</button>
+    <button class="tab" data-view="crew" role="tab"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M2 20c0-4 3-6 7-6s7 2 7 6M16 4a3.5 3.5 0 0 1 0 7M18 14c2.5.5 4 2.5 4 6" fill="none" stroke="currentColor" stroke-width="2"/></svg>Crew</button>
+  </nav>
+</div>
+
+<!-- ============ MODALS ============ -->
+<dialog id="dlg-car" class="dlg">
+  <form id="form-car" method="dialog" class="stack">
+    <h3 class="h3" id="car-dlg-title">Add car</h3>
+    <div class="photo-pick">
+      <img id="car-photo-preview" alt="" hidden>
+      <label class="btn ghost sm" for="in-car-photo">Add photo</label>
+      <input id="in-car-photo" type="file" accept="image/*" hidden>
+    </div>
+    <div id="spin-edit" class="spin-edit"></div>
+    <input id="in-car-spin" type="file" accept="video/*,image/*" multiple hidden>
+    <label class="lbl" for="in-car-name">Name</label>
+    <input id="in-car-name" maxlength="30" placeholder="e.g. Hellux" required>
+    <div class="grid2">
+      <div><label class="lbl" for="in-car-make">Make</label><input id="in-car-make" maxlength="30" placeholder="Toyota"></div>
+      <div><label class="lbl" for="in-car-model">Model</label><input id="in-car-model" maxlength="30" placeholder="Hilux single cab"></div>
+      <div><label class="lbl" for="in-car-year">Year</label><input id="in-car-year" inputmode="numeric" maxlength="4" placeholder="2007"></div>
+      <div><label class="lbl" for="in-car-colour">Colour</label><input id="in-car-colour" maxlength="20" placeholder="White"></div>
+      <div><label class="lbl" for="in-car-engine">Engine</label><input id="in-car-engine" maxlength="30" placeholder="V8"></div>
+      <div><label class="lbl" for="in-car-power">Power (kW)</label><input id="in-car-power" inputmode="numeric" maxlength="5" placeholder="175"></div>
+    </div>
+    <label class="lbl" for="in-car-mods">Mods (one per line)</label>
+    <textarea id="in-car-mods" rows="4" maxlength="800" placeholder="Straight-through exhaust&#10;Lowered 2 inches"></textarea>
+    <label class="check"><input type="checkbox" id="in-car-active"> I'm driving this one now</label>
+    <div class="row-end">
+      <button type="button" id="btn-car-delete" class="btn danger sm" hidden>Delete</button>
+      <span class="spacer"></span>
+      <button type="button" id="btn-car-cancel" class="btn ghost sm">Cancel</button>
+      <button type="submit" class="btn primary sm">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-member" class="dlg">
+  <div id="member-body"></div>
+  <div class="row-end"><button id="btn-member-close" class="btn ghost sm">Close</button></div>
+</dialog>
+
+<dialog id="dlg-convoy" class="dlg">
+  <form id="form-convoy" method="dialog" class="stack">
+    <h3 class="h3">Start a convoy</h3>
+    <label class="lbl" for="in-convoy-name">Convoy name</label>
+    <input id="in-convoy-name" maxlength="40" placeholder="Sunday run to Hartbeespoort" required>
+    <label class="lbl" for="in-convoy-dest">Destination label</label>
+    <input id="in-convoy-dest" maxlength="40" placeholder="Dam wall lookout">
+    <p class="fine" id="convoy-dest-coords">No destination set yet.</p>
+    <button type="button" id="btn-convoy-pick" class="btn ghost sm">Pick destination on map</button>
+    <div class="row-end">
+      <button type="button" id="btn-convoy-cancel" class="btn ghost sm">Cancel</button>
+      <button type="submit" class="btn primary sm">Start convoy</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-bass" class="dlg">
+  <form id="form-bass" method="dialog" class="stack">
+    <h3 class="h3">Log a bass score</h3>
+    <div class="grid2">
+      <div><label class="lbl" for="in-bass-val">Score (dB)</label><input id="in-bass-val" inputmode="decimal" placeholder="142.6" required></div>
+      <div><label class="lbl" for="in-bass-class">Class</label>
+        <select id="in-bass-class"><option>Daily</option><option>Street</option><option>Extreme</option></select></div>
+      <div><label class="lbl" for="in-bass-hz">Frequency (Hz)</label><input id="in-bass-hz" inputmode="decimal" placeholder="45"></div>
+      <div><label class="lbl" for="in-bass-car">Car</label><input id="in-bass-car" maxlength="30" placeholder="Hellux"></div>
+    </div>
+    <label class="lbl" for="in-bass-setup">Setup</label>
+    <input id="in-bass-setup" maxlength="60" placeholder="2x 12&quot; subs, 2000 W mono amp">
+    <label class="lbl" for="in-bass-venue">Where</label>
+    <input id="in-bass-venue" maxlength="40" placeholder="Menlyn Maine car meet">
+    <div class="photo-pick">
+      <img id="bass-photo-preview" alt="" hidden>
+      <label class="btn ghost sm" for="in-bass-photo">Add photo of the meter</label>
+      <input id="in-bass-photo" type="file" accept="image/*" capture="environment" hidden>
+    </div>
+    <div class="row-end">
+      <span class="spacer"></span>
+      <button type="button" id="btn-bass-cancel" class="btn ghost sm">Cancel</button>
+      <button type="submit" class="btn primary sm">Save score</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-speed" class="dlg">
+  <form id="form-speed" method="dialog" class="stack">
+    <h3 class="h3">Log a top speed</h3>
+    <div class="grid2">
+      <div><label class="lbl" for="in-speed-val">Top speed (km/h)</label><input id="in-speed-val" inputmode="numeric" placeholder="212" required></div>
+      <div><label class="lbl" for="in-speed-class">Where</label>
+        <select id="in-speed-class"><option>Track</option><option>Drag strip</option><option>Airfield</option><option>Road</option></select></div>
+      <div><label class="lbl" for="in-speed-method">Measured with</label>
+        <select id="in-speed-method"><option>Dragy</option><option>GPS app</option><option>Dash photo</option><option>Other</option></select></div>
+      <div><label class="lbl" for="in-speed-car">Car</label><input id="in-speed-car" maxlength="30" placeholder="Hellux"></div>
+    </div>
+    <label class="lbl" for="in-speed-venue">Venue</label>
+    <input id="in-speed-venue" maxlength="40" placeholder="Zwartkops Raceway">
+    <div class="photo-pick">
+      <img id="speed-photo-preview" alt="" hidden>
+      <label class="btn ghost sm" for="in-speed-photo">Add photo as proof</label>
+      <input id="in-speed-photo" type="file" accept="image/*" hidden>
+    </div>
+    <div class="row-end">
+      <span class="spacer"></span>
+      <button type="button" id="btn-speed-cancel" class="btn ghost sm">Cancel</button>
+      <button type="submit" class="btn primary sm">Save run</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-meet" class="dlg">
+  <form id="form-meet" method="dialog" class="stack">
+    <h3 class="h3" id="meet-dlg-title">Post a meet</h3>
+    <label class="lbl" for="in-meet-title">What's happening</label>
+    <input id="in-meet-title" maxlength="50" placeholder="Friday night meet" required>
+    <label class="lbl" for="in-meet-when">When</label>
+    <input id="in-meet-when" type="datetime-local" required>
+    <label class="lbl" for="in-meet-place">Place name</label>
+    <input id="in-meet-place" maxlength="50" placeholder="Menlyn Maine parking">
+    <p class="fine" id="meet-pin-text">No pin dropped yet.</p>
+    <button type="button" id="btn-meet-pick" class="btn ghost sm">Drop the pin on the map</button>
+    <label class="lbl" for="in-meet-notes">Details (optional)</label>
+    <textarea id="in-meet-notes" rows="3" maxlength="400" placeholder="All cars welcome. No burnouts, security is strict."></textarea>
+    <div class="row-end">
+      <button type="button" id="btn-meet-delete" class="btn danger sm" hidden>Cancel meet</button>
+      <span class="spacer"></span>
+      <button type="button" id="btn-meet-cancel" class="btn ghost sm">Close</button>
+      <button type="submit" class="btn primary sm">Post meet</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-meet-view" class="dlg">
+  <div id="meet-view-body"></div>
+  <div class="row-end"><span class="spacer"></span><button id="btn-meet-view-close" class="btn ghost sm">Close</button></div>
+</dialog>
+
+<dialog id="dlg-log" class="dlg">
+  <div id="log-body"></div>
+  <form id="form-log" class="stack log-form" hidden>
+    <h3 class="h3" style="margin-top:6px">Add to the log</h3>
+    <div class="grid2">
+      <div><label class="lbl" for="in-log-type">Type</label>
+        <select id="in-log-type"><option>Mod</option><option>Service</option><option>Repair</option><option>Parts</option></select></div>
+      <div><label class="lbl" for="in-log-date">Date</label><input id="in-log-date" type="date" required></div>
+    </div>
+    <label class="lbl" for="in-log-title">What was done</label>
+    <input id="in-log-title" maxlength="60" placeholder="Straight-through exhaust" required>
+    <div class="grid2">
+      <div><label class="lbl" for="in-log-cost">Cost (R)</label><input id="in-log-cost" inputmode="decimal" placeholder="4500"></div>
+      <div><label class="lbl" for="in-log-odo">Odometer (km)</label><input id="in-log-odo" inputmode="numeric" placeholder="212000"></div>
+    </div>
+    <div id="log-next-wrap" class="grid2" hidden>
+      <div><label class="lbl" for="in-log-next-date">Next service by</label><input id="in-log-next-date" type="date"></div>
+      <div><label class="lbl" for="in-log-next-km">or at (km)</label><input id="in-log-next-km" inputmode="numeric" placeholder="227000"></div>
+    </div>
+    <label class="lbl" for="in-log-notes">Notes (optional)</label>
+    <input id="in-log-notes" maxlength="120" placeholder="Done at Exhaust Masters, Silverton">
+    <div class="row-end"><span class="spacer"></span><button type="button" id="btn-log-form-cancel" class="btn ghost sm">Cancel</button><button type="submit" class="btn primary sm">Add</button></div>
+  </form>
+  <div class="row-end" id="log-actions"><button type="button" id="btn-log-add" class="btn primary sm">Add entry</button><span class="spacer"></span><button id="btn-log-close" class="btn ghost sm">Close</button></div>
+</dialog>
+
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
