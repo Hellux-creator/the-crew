@@ -15,6 +15,7 @@ export function createDemoStore() {
   const crew = { id: "KNV8X2", name: "Pretoria Night Runners", ownerId: uid };
   const paths = Object.fromEntries(Object.entries(ROUTES).map(([k, v]) => [k, densify(v, 30)]));
   const tick = { ruan: 40, lize: 10, dewald: 0 };
+  const runStart = Date.now() - 4 * 60000;
   const now = Date.now();
   const members = {
     ruan: { callsign: "Ruan", phone: "082 555 0101", car: { name: "Golf 7 GTI", desc: "2016 VW Golf GTI Performance" }, ghost: false, stats: { cells: 1840, km: 612 } },
@@ -76,6 +77,11 @@ export function createDemoStore() {
       const a = path[tick[k]], b = path[(tick[k] + 1) % path.length];
       Object.assign(members[k], { lat: a.lat, lng: a.lng, speed: k === "lize" ? 14 : 22, heading: Math.atan2(b.lng - a.lng, b.lat - a.lat) * 180 / Math.PI, updatedAt: Date.now() });
     }
+    // Ruan: live speed run, speed rises and falls like laps of a track
+    const t = (Date.now() - runStart) / 1000;
+    const v = 22 + 30 * Math.max(0, Math.sin(t / 6)) + 4 * Math.sin(t / 1.3);
+    members.ruan.speed = +v.toFixed(1);
+    members.ruan.run = { start: runStart, cls: "Track", venue: "Zwartkops", car: "Golf 7 GTI", now: members.ruan.speed, top: Math.max(members.ruan.run?.top || 0, v) };
     emitMembers();
   }
   step();
