@@ -1,10 +1,10 @@
-// Paste your Firebase web app config here (Firebase console → Project settings → Your apps → Web app).
-// While apiKey still says PASTE_..., THE CREW runs in demo mode with a pretend crew.
+// Firebase web app config for THE CREW (project the-crew-f181d).
+// These keys are meant to live in the app; the Firestore rules protect the data.
 export const firebaseConfig = {
-  apiKey: "PASTE_YOUR_API_KEY",
-  authDomain: "your-project.firebaseapp.com",
-  projectId: "your-project",
-  storageBucket: "your-project.appspot.com",
-  messagingSenderId: "000000000000",
-  appId: "1:000000000000:web:0000000000000000"
+  apiKey: "AIzaSyA2ClvGWY9vmmOeB5kvlbWiJA25A7yCEE0",
+  authDomain: "the-crew-f181d.firebaseapp.com",
+  projectId: "the-crew-f181d",
+  storageBucket: "the-crew-f181d.firebasestorage.app",
+  messagingSenderId: "423820645196",
+  appId: "1:423820645196:web:f44ecfb156c590ec9f35e9"
 };
