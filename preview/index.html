@@ -283,10 +283,15 @@
     <h3 class="h3">Start a convoy</h3>
     <label class="lbl" for="in-convoy-name">Convoy name</label>
     <input id="in-convoy-name" maxlength="40" placeholder="Sunday run to Hartbeespoort" required>
-    <label class="lbl" for="in-convoy-dest">Destination label</label>
+    <label class="lbl" for="in-convoy-search">Destination</label>
+    <div class="place-search">
+      <input id="in-convoy-search" type="search" placeholder="Search a place, e.g. Hartbeespoort Dam" autocomplete="off" enterkeyhint="search">
+      <div id="convoy-results" class="place-results" hidden></div>
+    </div>
+    <p class="fine place-picked" id="convoy-dest-coords">No destination set yet.</p>
+    <div class="place-alt"><button type="button" id="btn-convoy-pick" class="linkish">Drop a pin on the map instead</button></div>
+    <label class="lbl" for="in-convoy-dest">Destination name</label>
     <input id="in-convoy-dest" maxlength="40" placeholder="Dam wall lookout">
-    <p class="fine" id="convoy-dest-coords">No destination set yet.</p>
-    <button type="button" id="btn-convoy-pick" class="btn ghost sm">Pick destination on map</button>
     <div class="row-end">
       <button type="button" id="btn-convoy-cancel" class="btn ghost sm">Cancel</button>
       <button type="submit" class="btn primary sm">Start convoy</button>
@@ -354,10 +359,15 @@
     <input id="in-meet-title" maxlength="50" placeholder="Friday night meet" required>
     <label class="lbl" for="in-meet-when">When</label>
     <input id="in-meet-when" type="datetime-local" required>
-    <label class="lbl" for="in-meet-place">Place name</label>
+    <label class="lbl" for="in-meet-search">Where</label>
+    <div class="place-search">
+      <input id="in-meet-search" type="search" placeholder="Search a place, e.g. Menlyn Maine" autocomplete="off" enterkeyhint="search">
+      <div id="meet-results" class="place-results" hidden></div>
+    </div>
+    <p class="fine place-picked" id="meet-pin-text">No place picked yet.</p>
+    <div class="place-alt"><button type="button" id="btn-meet-here" class="linkish">Use my location</button><span>·</span><button type="button" id="btn-meet-pick" class="linkish">Drop a pin on the map</button></div>
+    <label class="lbl" for="in-meet-place">Place name (shown to the crew)</label>
     <input id="in-meet-place" maxlength="50" placeholder="Menlyn Maine parking">
-    <p class="fine" id="meet-pin-text">No pin dropped yet.</p>
-    <button type="button" id="btn-meet-pick" class="btn ghost sm">Drop the pin on the map</button>
     <label class="lbl" for="in-meet-notes">Details (optional)</label>
     <textarea id="in-meet-notes" rows="3" maxlength="400" placeholder="All cars welcome. No burnouts, security is strict."></textarea>
     <div class="row-end">

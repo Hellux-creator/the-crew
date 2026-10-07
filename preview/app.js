@@ -706,10 +706,18 @@ async function updateWakeLock() {
 const dlgConvoy = $("#dlg-convoy");
 function openConvoyDialog(keep) {
   if (!keep) { $("#form-convoy").reset(); S.pendingDest = null; }
-  $("#convoy-dest-coords").textContent = S.pendingDest ? `Pinned at ${S.pendingDest.lat.toFixed(4)}, ${S.pendingDest.lng.toFixed(4)}` + (S.pos ? ` · ${fmtKm(haversine(S.pos, S.pendingDest))} from you` : "") : "No destination set yet.";
-  $("#btn-convoy-pick").textContent = S.pendingDest ? "Move the pin" : "Pick destination on map";
+  if (!keep) $("#in-convoy-search").value = "";
+  $("#convoy-results").hidden = true;
+  renderConvoyPicked();
   dlgConvoy.showModal();
 }
+function renderConvoyPicked() {
+  const el = $("#convoy-dest-coords");
+  el.classList.toggle("ok", !!S.pendingDest);
+  el.textContent = S.pendingDest ? `✓ Destination set${$("#in-convoy-dest").value ? `: ${$("#in-convoy-dest").value}` : ""}` + (S.pos ? ` · ${fmtKm(haversine(S.pos, S.pendingDest))} from you` : "") : "No destination set yet.";
+}
+placeSearch($("#in-convoy-search"), $("#convoy-results"), (r) => { S.pendingDest = { lat: r.lat, lng: r.lng }; $("#in-convoy-dest").value = r.name.slice(0, 40); renderConvoyPicked(); });
+$("#in-convoy-dest").addEventListener("input", renderConvoyPicked);
 function startPick(mode, text) {
   setView("map");
   S.pick = mode;
@@ -725,7 +733,7 @@ $("#btn-pick-cancel").addEventListener("click", () => {
 $("#btn-convoy-cancel").addEventListener("click", () => dlgConvoy.close());
 $("#form-convoy").addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (!S.pendingDest) { toast("Pick a destination on the map first."); return; }
+  if (!S.pendingDest) { toast("Search for the destination, or drop a pin on the map"); return; }
   const name = $("#in-convoy-name").value.trim();
   if (!name) return;
   const cur = myConvoy();
@@ -739,6 +747,46 @@ $("#form-convoy").addEventListener("submit", async (e) => {
   toast("Convoy started. The crew can join from the Meets tab.");
   setView("convoy"); setSeg("convoys");
 });
+
+/* ---------------- place search ---------------- */
+// Free OpenStreetMap search (Nominatim), limited to South Africa and biased to where you are.
+let lastSearchAt = 0, searchCtl = null;
+async function searchPlaces(q) {
+  const wait = 1000 - (Date.now() - lastSearchAt); // their rule: at most one search a second
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  lastSearchAt = Date.now();
+  searchCtl?.abort();
+  searchCtl = new AbortController();
+  let url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&countrycodes=za&accept-language=en&q=${encodeURIComponent(q)}`;
+  if (S.pos) url += `&viewbox=${S.pos.lng - 1.5},${S.pos.lat + 1.5},${S.pos.lng + 1.5},${S.pos.lat - 1.5}`;
+  const res = await fetch(url, { signal: searchCtl.signal });
+  if (!res.ok) throw new Error("search");
+  return (await res.json()).map((r) => {
+    const parts = (r.display_name || "").split(",").map((s) => s.trim());
+    return { name: r.name || parts[0], sub: parts.slice(r.name ? 1 : 1, 4).join(", "), lat: +(+r.lat).toFixed(6), lng: +(+r.lon).toFixed(6) };
+  });
+}
+// Wires a search box to a results list. onPick({name, sub, lat, lng}) runs when a result is tapped.
+function placeSearch(input, list, onPick) {
+  let timer = null;
+  const show = (nodes) => { list.replaceChildren(...nodes); list.hidden = !nodes.length; };
+  const run = async () => {
+    const q = input.value.trim();
+    if (q.length < 3) { show([]); return; }
+    show([h("div", { class: "msg" }, "Searching…")]);
+    try {
+      const results = await searchPlaces(q);
+      if (input.value.trim() !== q) return;
+      show(results.length ? results.map((r) => h("button", { type: "button", onclick: () => { show([]); input.value = r.name; onPick(r); } },
+        h("b", {}, r.name), h("small", {}, [r.sub, S.pos ? fmtKm(haversine(S.pos, r)) + " away" : ""].filter(Boolean).join(" · "))))
+        : [h("div", { class: "msg" }, "No places found. Try adding the suburb or town, or drop a pin on the map.")]);
+    } catch (e) {
+      if (e.name !== "AbortError") show([h("div", { class: "msg" }, "Search isn't working right now. Drop a pin on the map instead.")]);
+    }
+  };
+  input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(run, 650); });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); clearTimeout(timer); run(); } });
+}
 
 /* ---------------- meets & events ---------------- */
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -814,7 +862,7 @@ function openMeetView(id) {
       ...(nav ? [
         h("button", { class: "btn ghost sm", onclick: () => { dlgMeetView.close(); setView("map"); S.map.flyTo([m.place.lat, m.place.lng], 15); } }, "Show on map"),
         h("a", { class: "btn ghost sm", href: `https://www.google.com/maps/dir/?api=1&destination=${nav}`, target: "_blank", rel: "noopener" }, "Directions"),
-        h("button", { class: "btn ghost sm", onclick: () => { dlgMeetView.close(); S.pendingDest = { lat: m.place.lat, lng: m.place.lng }; openConvoyDialog(true); $("#in-convoy-name").value = `Convoy to ${m.title}`; $("#in-convoy-dest").value = m.place.label || ""; } }, "Start a convoy there"),
+        h("button", { class: "btn ghost sm", onclick: () => { dlgMeetView.close(); S.pendingDest = { lat: m.place.lat, lng: m.place.lng }; openConvoyDialog(true); $("#in-convoy-name").value = `Convoy to ${m.title}`; $("#in-convoy-dest").value = m.place.label || ""; renderConvoyPicked(); } }, "Start a convoy there"),
       ] : []),
       ...(host ? [h("button", { class: "btn ghost sm", onclick: () => { dlgMeetView.close(); openMeetDialog(false, m); } }, "Edit")] : [])));
   dlgMeetView.showModal();
@@ -837,10 +885,24 @@ function openMeetDialog(keep, editMeet) {
   $("#meet-dlg-title").textContent = meetDraft.editing ? "Edit meet" : "Post a meet";
   $("#btn-meet-delete").hidden = !meetDraft.editing;
   $("#form-meet button[type=submit]").textContent = meetDraft.editing ? "Save" : "Post meet";
-  $("#meet-pin-text").textContent = meetDraft.place ? "Pin dropped" + (S.pos ? ` · ${fmtKm(haversine(S.pos, meetDraft.place))} from you` : "") : "No pin dropped yet.";
-  $("#btn-meet-pick").textContent = meetDraft.place ? "Move the pin" : "Drop the pin on the map";
+  renderMeetPicked();
+  $("#meet-results").hidden = true;
+  if (!keep) $("#in-meet-search").value = editMeet?.place?.label || "";
   dlgMeet.showModal();
 }
+function renderMeetPicked() {
+  const el = $("#meet-pin-text");
+  el.classList.toggle("ok", !!meetDraft.place);
+  el.textContent = meetDraft.place ? `✓ Place set${$("#in-meet-place").value ? `: ${$("#in-meet-place").value}` : ""}` + (S.pos ? ` · ${fmtKm(haversine(S.pos, meetDraft.place))} from you` : "") : "No place picked yet.";
+}
+placeSearch($("#in-meet-search"), $("#meet-results"), (r) => { meetDraft.place = { lat: r.lat, lng: r.lng }; $("#in-meet-place").value = r.name.slice(0, 50); renderMeetPicked(); });
+$("#btn-meet-here").addEventListener("click", () => {
+  if (!S.pos) { toast("Waiting for GPS. Try again in a moment."); return; }
+  meetDraft.place = { lat: +S.pos.lat.toFixed(6), lng: +S.pos.lng.toFixed(6) };
+  if (!$("#in-meet-place").value) $("#in-meet-place").value = "Where I am now";
+  renderMeetPicked();
+});
+$("#in-meet-place").addEventListener("input", renderMeetPicked);
 $("#btn-meet-pick").addEventListener("click", () => { dlgMeet.close(); startPick("meet", "Tap the map where the meet is"); });
 $("#btn-meet-cancel").addEventListener("click", () => dlgMeet.close());
 $("#btn-meet-delete").addEventListener("click", async (e) => {
@@ -855,7 +917,7 @@ $("#form-meet").addEventListener("submit", async (e) => {
   e.preventDefault();
   const when = new Date($("#in-meet-when").value).getTime();
   if (!when || isNaN(when)) { toast("Pick a date and time"); return; }
-  if (!meetDraft.place) { toast("Drop the pin on the map first"); return; }
+  if (!meetDraft.place) { toast("Search for the place, or drop a pin on the map"); return; }
   const data = { title: $("#in-meet-title").value.trim(), when, notes: $("#in-meet-notes").value.trim(), place: { ...meetDraft.place, label: $("#in-meet-place").value.trim() } };
   if (!data.title) return;
   if (meetDraft.editing) await S.store.updateMeet(S.crew.id, meetDraft.editing.id, data);
