@@ -604,12 +604,93 @@ $("#form-convoy").addEventListener("submit", async (e) => {
   setView("convoy");
 });
 
+/* ---------------- 360° spin view ---------------- */
+const SPIN_FRAMES = 24;
+const SPIN_MAX_CHARS = 760000; // keep the whole car under Firestore's 1 MB document limit
+
+// Interactive viewer: drag to turn, slow auto-turn until someone touches it.
+function spinViewer(frames, alt) {
+  const img = h("img", { class: "car-photo spin-img", src: frames[0], alt: `${alt}, 360° view`, draggable: "false" });
+  const wrap = h("div", { class: "spin", title: "Drag to spin" }, img, h("span", { class: "spin-badge" }, "360°"));
+  frames.forEach((f) => { const p = new Image(); p.src = f; }); // preload
+  let idx = 0, startX = 0, startIdx = 0, dragging = false, moved = false, timer = null;
+  const show = (i) => { idx = ((i % frames.length) + frames.length) % frames.length; img.src = frames[idx]; };
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const stopAuto = () => { if (timer) { clearInterval(timer); timer = null; } wrap.classList.add("touched"); };
+  if (!reduce) timer = setInterval(() => { if (!document.hidden && wrap.isConnected) show(idx + 1); else if (!wrap.isConnected) clearInterval(timer); }, 140);
+  wrap.addEventListener("pointerdown", (e) => { dragging = true; moved = false; startX = e.clientX; startIdx = idx; stopAuto(); wrap.setPointerCapture(e.pointerId); e.stopPropagation(); });
+  wrap.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const step = Math.max(6, wrap.clientWidth / (frames.length * 1.2));
+    const d = Math.round((e.clientX - startX) / step);
+    if (d) moved = true;
+    show(startIdx - d);
+  });
+  const end = (e) => { dragging = false; e.stopPropagation(); };
+  wrap.addEventListener("pointerup", end);
+  wrap.addEventListener("pointercancel", end);
+  wrap.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); });
+  return wrap;
+}
+
+// Pull evenly spaced frames out of a walk-around video (or use picked photos in order).
+async function framesFromFiles(files, onProgress) {
+  const list = [...files];
+  if (list.length > 1 || (list[0] && list[0].type.startsWith("image/"))) {
+    const imgs = list.filter((f) => f.type.startsWith("image/")).slice(0, 36);
+    const out = [];
+    for (const f of imgs) { out.push(await shrinkImage(f, 480, 0.6)); onProgress?.(out.length, imgs.length); }
+    return out;
+  }
+  const file = list[0];
+  const url = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  video.muted = true; video.playsInline = true; video.preload = "auto"; video.src = url;
+  try {
+    await new Promise((res, rej) => { video.onloadeddata = res; video.onerror = () => rej(new Error("video")); setTimeout(() => rej(new Error("timeout")), 20000); });
+    // iOS only decodes frames after playback has started once
+    try { await video.play(); video.pause(); } catch {}
+    const dur = video.duration;
+    if (!isFinite(dur) || dur < 2) throw new Error("short");
+    const w0 = video.videoWidth, h0 = video.videoHeight, s = Math.min(1, 480 / Math.max(w0, h0));
+    const c = document.createElement("canvas");
+    c.width = Math.round(w0 * s); c.height = Math.round(h0 * s);
+    const ctx = c.getContext("2d");
+    const raw = [];
+    for (let i = 0; i < SPIN_FRAMES; i++) {
+      const t = Math.min(dur - 0.05, (dur * i) / SPIN_FRAMES + 0.02);
+      await new Promise((res) => { video.onseeked = res; video.currentTime = t; setTimeout(res, 3000); });
+      ctx.drawImage(video, 0, 0, c.width, c.height);
+      raw.push(c.toDataURL("image/jpeg", 0.6));
+      onProgress?.(i + 1, SPIN_FRAMES);
+    }
+    return raw;
+  } finally { URL.revokeObjectURL(url); video.removeAttribute("src"); }
+}
+
+// Shrink the set until it fits in one database document.
+async function fitFrames(frames) {
+  const total = (f) => f.reduce((n, s) => n + s.length, 0);
+  let out = frames;
+  const recompress = async (list, q, max) => Promise.all(list.map((d) => new Promise((res) => {
+    const im = new Image();
+    im.onload = () => { const s = Math.min(1, max / Math.max(im.width, im.height)); const c = document.createElement("canvas"); c.width = Math.round(im.width * s); c.height = Math.round(im.height * s); c.getContext("2d").drawImage(im, 0, 0, c.width, c.height); res(c.toDataURL("image/jpeg", q)); };
+    im.src = d;
+  })));
+  if (total(out) > SPIN_MAX_CHARS) out = await recompress(out, 0.45, 420);
+  if (total(out) > SPIN_MAX_CHARS) out = out.filter((_, i) => i % 4 !== 3);
+  if (total(out) > SPIN_MAX_CHARS) out = await recompress(out, 0.38, 360);
+  return out;
+}
+
 /* ---------------- garage ---------------- */
 function carCard(v, onclick) {
-  const photo = v.photo ? h("img", { class: "car-photo", src: v.photo, alt: v.name }) : h("div", { class: "car-photo" }, initial(v.name));
+  const photo = v.spin?.length ? spinViewer(v.spin, v.name)
+    : v.photo ? h("img", { class: "car-photo", src: v.photo, alt: v.name }) : h("div", { class: "car-photo" }, initial(v.name));
   const spec = [v.year, v.make, v.model].filter(Boolean).join(" ");
   const extra = [v.colour, v.engine, v.power ? `${v.power} kW` : ""].filter(Boolean).join(" · ");
-  return h(onclick ? "button" : "div", { class: "car", onclick },
+  return h("div", { class: `car${onclick ? " editable" : ""}`, onclick, role: onclick ? "button" : null, tabindex: onclick ? "0" : null,
+    onkeydown: onclick ? (e) => { if (e.key === "Enter") onclick(); } : null },
     photo,
     h("div", { class: "car-body" },
       h("div", { class: "car-name" }, v.name, v.active ? h("span", { class: "badge" }, "Driving") : null),
@@ -627,10 +708,12 @@ function renderGarage() {
   [...S.myVehicles].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0)).forEach((v) => list.append(carCard(v, () => openCar(v))));
 }
 const dlgCar = $("#dlg-car");
-let editing = null, photoData = "";
+let editing = null, photoData = "", spinData = [];
 function openCar(v) {
   editing = v || null;
   photoData = v?.photo || "";
+  spinData = v?.spin || [];
+  renderSpinEdit();
   $("#car-dlg-title").textContent = v ? "Edit car" : "Add car";
   $("#in-car-name").value = v?.name || "";
   $("#in-car-make").value = v?.make || "";
@@ -654,6 +737,32 @@ $("#in-car-photo").addEventListener("change", async (e) => {
   try { photoData = await shrinkImage(f, 720, 0.72); const img = $("#car-photo-preview"); img.src = photoData; img.hidden = false; }
   catch { toast("Couldn't read that photo. Try a JPG or PNG."); }
 });
+function renderSpinEdit(status) {
+  const box = $("#spin-edit");
+  box.replaceChildren(
+    h("div", { class: "lbl" }, "360° view"),
+    spinData.length ? spinViewer(spinData, "Preview") : null,
+    h("div", { class: "fine" }, status || (spinData.length ? `${spinData.length} angles. Drag the preview to check it.` : "Record a 15–20 second video walking slowly around the car, keeping it in the middle of the screen.")),
+    h("div", { class: "btn-row" },
+      h("label", { class: "btn ghost sm", for: "in-car-spin" }, spinData.length ? "Record again" : "Record 360° video"),
+      spinData.length ? h("button", { type: "button", class: "btn danger sm", onclick: () => { spinData = []; renderSpinEdit(); } }, "Remove") : null));
+}
+$("#in-car-spin").addEventListener("change", async (e) => {
+  const files = e.target.files;
+  if (!files?.length) return;
+  const saveBtn = $("#form-car button[type=submit]");
+  saveBtn.disabled = true;
+  try {
+    renderSpinEdit("Making your 360° view…");
+    const frames = await framesFromFiles(files, (n, t) => { const f = $("#spin-edit .fine"); if (f) f.textContent = `Making your 360° view… ${n}/${t}`; });
+    if (frames.length < 6) throw new Error("few");
+    spinData = await fitFrames(frames);
+    renderSpinEdit();
+    toast("360° view ready. Tap Save to keep it.");
+  } catch {
+    renderSpinEdit("Couldn't read that video. Try a shorter one (under 30 seconds), or pick 12–24 photos taken around the car.");
+  } finally { saveBtn.disabled = false; e.target.value = ""; }
+});
 function shrinkImage(file, max, q) {
   return new Promise((res, rej) => {
     const img = new Image();
@@ -676,7 +785,7 @@ $("#form-car").addEventListener("submit", async (e) => {
     name: $("#in-car-name").value.trim(), make: $("#in-car-make").value.trim(), model: $("#in-car-model").value.trim(),
     year: $("#in-car-year").value.trim(), colour: $("#in-car-colour").value.trim(), engine: $("#in-car-engine").value.trim(),
     power: $("#in-car-power").value.trim(), mods: $("#in-car-mods").value.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 20),
-    active: $("#in-car-active").checked, photo: photoData,
+    active: $("#in-car-active").checked, photo: photoData, spin: spinData,
   };
   if (!v.name) return;
   try {

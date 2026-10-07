@@ -125,6 +125,7 @@ a.btn.primary{color:var(--accent-ink)}
 /* ---------- garage ---------- */
 .cars{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
 .car{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;text-align:left;padding:0;display:flex;flex-direction:column}
+.car.editable{cursor:pointer}
 .car-photo{aspect-ratio:16/9;width:100%;object-fit:cover;background:linear-gradient(135deg,#1c2430,#0f141b);display:grid;place-items:center;color:var(--line);font:800 48px/1 var(--f-display)}
 .car-body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:4px}
 .car-name{font:800 24px/1 var(--f-display);text-transform:uppercase;letter-spacing:.03em;display:flex;align-items:center;gap:8px}
@@ -241,3 +242,13 @@ select{font:inherit;color:var(--fg);background:var(--panel-2);border:1px solid v
 
 .tab svg{width:21px;height:21px}
 #btn-showfog{margin-top:4px}
+
+/* ---------- 360 spin ---------- */
+.spin{position:relative;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none;background:#0b0f15}
+.spin:active{cursor:grabbing}
+.spin-img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;pointer-events:none}
+.spin-badge{position:absolute;left:10px;top:10px;background:rgba(13,17,23,.82);border:1px solid var(--accent);color:var(--accent);border-radius:999px;padding:3px 9px;font:700 13px/1 var(--f-display);letter-spacing:.06em}
+.spin::after{content:"Drag to spin";position:absolute;right:10px;bottom:10px;background:rgba(13,17,23,.75);color:var(--fg);font-size:11px;border-radius:6px;padding:3px 7px;transition:opacity .4s}
+.spin.touched::after{opacity:0}
+.spin-edit{display:flex;flex-direction:column;gap:8px;border:1px dashed var(--line);border-radius:12px;padding:12px}
+.spin-edit .spin{border-radius:10px;overflow:hidden}
