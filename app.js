@@ -476,7 +476,7 @@ function startGps() {
   if (!navigator.geolocation) return gpsWarn("This browser can't share location.");
   S.watchId = navigator.geolocation.watchPosition(onFix, (err) => {
     if (DEMO) { simulateMe(); return; }
-    gpsWarn(err.code === 1 ? "Location is blocked. Allow location for this app in your phone settings so the crew can see you." : "Can't get a GPS fix yet…");
+    gpsWarn(err.code === 1 ? "Location is blocked, so the crew can't see you. Tap here to fix it." : "Can't get a GPS fix yet… Tap here if this doesn't clear.", err.code === 1);
   }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 30000 });
 }
 let simTimer;
@@ -492,7 +492,43 @@ async function simulateMe() {
   go();
   simTimer = setInterval(go, 1500);
 }
-function gpsWarn(msg) { const w = $("#gps-warn"); w.textContent = msg; w.hidden = !msg; }
+function gpsWarn(msg, blocked) {
+  const w = $("#gps-warn");
+  w.textContent = msg; w.hidden = !msg;
+  w.onclick = msg ? () => showLocationHelp(blocked) : null;
+}
+// Step-by-step fix, written for the phone the person is holding.
+function showLocationHelp(blocked) {
+  const ios = isIOS();
+  const steps = ios ? [
+    "Open Settings → Privacy & Security → Location Services and make sure it's ON.",
+    "On that same screen, scroll down to Safari Websites → choose While Using the App, and switch on Precise Location.",
+    "Go to Settings → Apps → Safari → Location (older iPhones: Settings → Safari → Location) and choose Ask or Allow.",
+    "Still stuck? Open this link in Safari, tap aA in the address bar → Website Settings → Location → Allow.",
+    "Close THE CREW fully, open it again, and tap Allow if it asks.",
+  ] : [
+    "Pull down from the top of the screen and make sure Location is ON.",
+    "Open Chrome → ⋮ menu → Settings → Site settings → Location, and make sure it's allowed (and this site isn't under Blocked).",
+    "Phone Settings → Location → App permissions (or App location permissions) → Chrome → Allow only while using the app, and turn on Use precise location.",
+    "Close THE CREW fully, open it again, and tap Allow if it asks.",
+  ];
+  $("#member-body").replaceChildren(
+    h("div", { class: "car-name", style: "margin-bottom:6px" }, "Turn on location"),
+    h("p", { class: "fine", style: "font-size:14px;margin-bottom:10px" }, blocked
+      ? `Your ${ios ? "iPhone" : "phone"} is blocking location for THE CREW. Follow these steps, then reopen the app.`
+      : "Your phone hasn't found you yet. Make sure you're outside or near a window, then check these settings."),
+    h("ol", { class: "steps" }, ...steps.map((s) => h("li", {}, s))),
+    h("div", { class: "btn-row", style: "margin-top:14px" },
+      h("button", { class: "btn primary sm", onclick: () => { dlgMember.close(); retryGps(); } }, "Try again")));
+  dlgMember.showModal();
+}
+function retryGps() {
+  if (S.watchId != null) navigator.geolocation.clearWatch(S.watchId);
+  S.watchId = null;
+  gpsWarn("Looking for your location…");
+  navigator.geolocation.getCurrentPosition(onFix, () => {}, { enableHighAccuracy: true, timeout: 20000 });
+  startGps();
+}
 
 function onFix(p) {
   gpsWarn("");

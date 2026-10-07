@@ -312,3 +312,5 @@ select{font:inherit;color:var(--fg);background:var(--panel-2);border:1px solid v
 .place-picked.ok{color:var(--good)}
 .place-alt{display:flex;gap:6px;align-items:center;color:var(--muted);font-size:13px;flex-wrap:wrap}
 .place-alt .linkish{padding:2px 0;font-size:13px}
+
+.gps-warn{cursor:pointer;text-decoration:underline;text-underline-offset:3px}
