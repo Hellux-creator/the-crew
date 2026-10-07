@@ -81,7 +81,7 @@ export function createDemoStore() {
     const t = (Date.now() - runStart) / 1000;
     const v = 22 + 30 * Math.max(0, Math.sin(t / 6)) + 4 * Math.sin(t / 1.3);
     members.ruan.speed = +v.toFixed(1);
-    members.ruan.run = { start: runStart, cls: "Track", venue: "Zwartkops", car: "Golf 7 GTI", now: members.ruan.speed, top: Math.max(members.ruan.run?.top || 0, v) };
+    members.ruan.run = { start: runStart, cls: "Track", venue: "Zwartkops", car: "Golf 7 GTI", now: members.ruan.speed, top: Math.max(members.ruan.run?.top || 0, v), at: Date.now() };
     emitMembers();
   }
   step();

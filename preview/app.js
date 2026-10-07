@@ -196,6 +196,7 @@ async function enterApp() {
       S.store.saveProfile(S.uid, { crewId: null }).then(() => { S.profile.crewId = null; route(); });
       return;
     }
+    noteRuns(list);
     renderMembers(); renderConvoyOverlay(); renderLiveStrip(); followWatched(); renderActiveView();
     if (!S.didFit && !S.pos) { S.didFit = true; fitCrew(); }
   }, () => toast("Lost connection to the crew. Retrying…")));
@@ -543,12 +544,14 @@ function onFix(p) {
     if (d > 8 && d < 3000 && dt > 0 && d / dt < 70) S.km += d / 1000;
   }
   if (fix.acc < 40) S.lastFix = fix;
+  // Many phones (most Androids in Chrome) don't report speed, so work it out from the distance moved.
+  // Movement smaller than the GPS accuracy is just jitter, so it counts as standing still.
   if (fix.speed == null && S.pos) {
-    const dt = (fix.t - S.pos.t) / 1000;
-    if (dt > 0) fix.speed = haversine(S.pos, fix) / dt;
+    const dt = (fix.t - S.pos.t) / 1000, d = haversine(S.pos, fix);
+    if (dt > 0.4) fix.speed = d < Math.max(fix.acc || 0, 5) ? 0 : d / dt;
   }
   S.pos = fix;
-  speedFeed(fix, rawSpeed);
+  speedFeed(fix, rawSpeed != null ? rawSpeed : fix.speed);
   if (fix.acc < 50) {
     const cell = ghEncode(fix.lat, fix.lng, CELL_PREC);
     if (!S.explored.has(cell)) { S.explored.add(cell); S.pendingCells.add(cell); if (S.fog) { S.fogLayer.redraw(); renderFogStat(); } }
@@ -581,7 +584,6 @@ function maybeSend(force = false) {
     lat: +S.pos.lat.toFixed(6), lng: +S.pos.lng.toFixed(6), acc: Math.round(S.pos.acc),
     speed: S.pos.speed != null ? +S.pos.speed.toFixed(1) : null, heading: S.pos.heading != null ? Math.round(S.pos.heading) : null,
     updatedAt: now, ghost: false,
-    run: session ? { start: session.start, cls: session.cls, venue: session.venue, car: session.car, now: +(session.now || 0).toFixed(1), top: +(session.top || 0).toFixed(1) } : null,
   }).catch(() => { S.lastSent = null; });
 }
 
@@ -1561,7 +1563,16 @@ for (const key of Object.keys(BOARDS)) {
 
 /* ---------------- watch a live speed run ---------------- */
 // A run counts as live while its sender has updated in the last 30 seconds.
-const isLiveRun = (m) => m.id !== S.uid && m.run && !m.ghost && m.lat != null && Date.now() - (m.updatedAt || 0) < 30000;
+const runSeen = new Map(); // member id -> { key, at: local time we last saw their run change }
+function noteRuns(list) {
+  for (const m of list) {
+    if (!m.run) { runSeen.delete(m.id); continue; }
+    const key = `${m.run.start}|${m.run.at}|${m.run.now}`;
+    const prev = runSeen.get(m.id);
+    if (!prev || prev.key !== key) runSeen.set(m.id, { key, at: Date.now() });
+  }
+}
+const isLiveRun = (m) => m.id !== S.uid && !!m.run && !m.ghost && Date.now() - (runSeen.get(m.id)?.at || 0) < 45000;
 const liveRuns = () => [...S.members.values()].filter(isLiveRun);
 let watchId = null, watchTrail = null, seenRuns = new Set();
 
@@ -1577,7 +1588,7 @@ function renderLiveStrip() {
     strip.replaceChildren(
       h("div", { class: "lv-top" }, h("span", { class: "recdot" }), h("b", {}, `${w.callsign} · LIVE`), h("span", { class: "lv-where" }, [w.run.venue || w.run.cls, w.run.car, `${mins} min`].filter(Boolean).join(" · "))),
       h("div", { class: "lv-gauge" },
-        h("div", { class: "lv-now" }, String(kmh(w.speed)), h("small", {}, "km/h")),
+        w.lat == null ? h("div", { class: "lv-where", style: "font-size:14px" }, "Waiting for their GPS…") : h("div", { class: "lv-now" }, String(kmh(w.run.now ?? w.speed)), h("small", {}, "km/h")),
         h("div", { class: "lv-top-speed" }, h("b", {}, String(kmh(w.run.top))), "top")),
       h("button", { class: "btn ghost sm", onclick: stopWatching }, "Stop watching"));
     strip.hidden = false;
@@ -1589,7 +1600,7 @@ function renderLiveStrip() {
   strip.className = "live-strip";
   strip.replaceChildren(
     h("span", { class: "recdot" }),
-    h("div", { class: "grow" }, h("b", {}, `${m.callsign} is live`), h("div", { class: "lv-where" }, `${kmh(m.speed)} km/h · top ${kmh(m.run.top)}${m.run.venue ? ` · ${m.run.venue}` : ""}${runs.length > 1 ? ` · +${runs.length - 1} more` : ""}`)),
+    h("div", { class: "grow" }, h("b", {}, `${m.callsign} is live`), h("div", { class: "lv-where" }, `${kmh(m.run.now ?? m.speed)} km/h · top ${kmh(m.run.top)}${m.run.venue ? ` · ${m.run.venue}` : ""}${runs.length > 1 ? ` · +${runs.length - 1} more` : ""}`)),
     h("button", { class: "btn primary sm", onclick: () => watchRun(m.id) }, "Watch"));
   strip.hidden = false;
 }
@@ -1598,8 +1609,8 @@ function watchRun(id) {
   setView("map");
   const m = S.members.get(id);
   if (watchTrail) S.map.removeLayer(watchTrail);
-  watchTrail = L.polyline(m ? [[m.lat, m.lng]] : [], { color: "#ff5d5d", weight: 4, opacity: 0.85, interactive: false }).addTo(S.map);
-  if (m) S.map.flyTo([m.lat, m.lng], 15, { duration: 0.6 });
+  watchTrail = L.polyline(m && m.lat != null ? [[m.lat, m.lng]] : [], { color: "#ff5d5d", weight: 4, opacity: 0.85, interactive: false }).addTo(S.map);
+  if (m && m.lat != null) S.map.flyTo([m.lat, m.lng], 15, { duration: 0.6 });
   renderLiveStrip();
 }
 function stopWatching(ended) {
@@ -1611,7 +1622,7 @@ function stopWatching(ended) {
 // called on every crew update
 function followWatched() {
   const m = watchId && S.members.get(watchId);
-  if (!m || !isLiveRun(m)) return;
+  if (!m || !isLiveRun(m) || m.lat == null || !watchTrail) return;
   const ll = [m.lat, m.lng];
   const pts = watchTrail.getLatLngs();
   const last = pts[pts.length - 1];
@@ -1627,7 +1638,7 @@ function renderLiveRunsCard() {
   box.replaceChildren(...(runs.length ? [h("div", { class: "lbl", style: "margin-bottom:8px" }, "Live now"), ...runs.map((m) => h("div", { class: "live-card" },
     h("span", { class: "recdot" }),
     h("div", { class: "grow" }, h("div", { class: "n" }, m.callsign), h("div", { class: "s" }, [m.run.venue || m.run.cls, m.run.car, `top ${kmh(m.run.top)} km/h`].filter(Boolean).join(" · "))),
-    h("div", { class: "num" }, h("span", { class: "dbv" }, String(kmh(m.speed)), h("small", {}, "km/h"))),
+    h("div", { class: "num" }, h("span", { class: "dbv" }, String(kmh(m.run.now ?? m.speed)), h("small", {}, "km/h"))),
     h("button", { class: "btn primary sm", onclick: () => watchRun(m.id) }, "Watch")))] : []));
 }
 
@@ -1660,6 +1671,37 @@ function speedFeed(fix, raw) {
   renderSession();
 }
 
+// While a session runs, tell the crew every 2.5 s, moving or not, GPS or not.
+let runStatus = { state: "idle" };
+async function sendRun() {
+  if (!session || !S.crew) return;
+  if (S.ghost) { runStatus = { state: "ghost" }; renderSession(); return; }
+  if (S.homeHidden) { runStatus = { state: "home" }; renderSession(); return; }
+  const now = Date.now();
+  const data = { run: { start: session.start, cls: session.cls, venue: session.venue, car: session.car, now: +(session.now || 0).toFixed(1), top: +(session.top || 0).toFixed(1), at: now } };
+  if (S.pos && now - S.pos.t < 30000) Object.assign(data, { lat: +S.pos.lat.toFixed(6), lng: +S.pos.lng.toFixed(6), speed: S.pos.speed != null ? +S.pos.speed.toFixed(1) : null, updatedAt: now, ghost: false });
+  try {
+    await S.store.updateMember(S.crew.id, S.uid, data);
+    runStatus = { state: S.pos ? "live" : "nogps", at: Date.now() };
+  } catch (e) {
+    console.warn("live run send failed", e);
+    runStatus = { state: "error", at: Date.now() };
+  }
+  renderSession();
+}
+setInterval(sendRun, 2500);
+function runStatusLine() {
+  const ago = runStatus.at ? Math.round((Date.now() - runStatus.at) / 1000) : null;
+  const msg = {
+    idle: ["Connecting to the crew…", "var(--muted)"],
+    live: [`Live to the crew · updated ${ago} s ago`, "var(--good)"],
+    nogps: ["The crew can see you're live, but your phone has no GPS yet. Tap the red bar on the map for help.", "#ffb4b4"],
+    ghost: ["Not visible: you're in ghost mode. Tap Ghost at the top to switch it off.", "#ffb4b4"],
+    home: ["Not visible: you're inside your home zone (Crew tab → Hide me at home).", "#ffb4b4"],
+    error: ["Not visible: can't reach the server. Check your signal or data.", "#ffb4b4"],
+  }[runStatus.state] || ["", "var(--muted)"];
+  return h("div", { class: "s", style: `color:${msg[1]};font-size:13px;text-align:center` }, msg[0]);
+}
 function startSession() {
   const active = S.myVehicles.find((v) => v.active);
   session = { start: Date.now(), top: 0, now: 0, cls: $("#in-sess-class").value, venue: $("#in-sess-venue").value.trim(), car: active?.name || "" };
@@ -1667,7 +1709,8 @@ function startSession() {
   lsSet("speedSession", session);
   updateWakeLock();
   renderSession();
-  maybeSend(true);
+  runStatus = { state: "idle" };
+  sendRun();
   toast(S.ghost || S.homeHidden ? "Speed session started. You're hidden, so the crew can't watch this one." : "Speed session started. The crew can watch you live.");
 }
 
@@ -1713,6 +1756,7 @@ function renderSession() {
         h("div", {}, h("b", {}, String(Math.round(session.top * 3.6))), "session top"),
         h("div", {}, h("b", {}, `${mins}`), "minutes"))),
     ...(S.pos ? [] : [h("div", { class: "s", style: "color:var(--bad)" }, "Waiting for GPS…")]),
+    runStatusLine(),
     h("button", { class: "btn danger wide", onclick: endSession }, "End session and save"));
 }
 
