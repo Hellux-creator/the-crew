@@ -1,5 +1,5 @@
 // App-shell cache. Bump VERSION whenever you change app files so phones pick up the update.
-const VERSION = "thecrew-v9";
+const VERSION = "thecrew-v10";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "geo.js", "store-firebase.js", "store-demo.js", "firebase-config.js", "manifest.webmanifest", "icons/icon-192.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => {

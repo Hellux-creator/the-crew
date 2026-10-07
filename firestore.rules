@@ -15,6 +15,11 @@ service cloud.firestore {
         allow read: if signedIn();
         allow write: if isMe(uid);
       }
+      // Sharp 360° frames, one per document
+      match /media/{mid} {
+        allow read: if signedIn();
+        allow write: if isMe(uid);
+      }
     }
 
     match /crews/{c} {

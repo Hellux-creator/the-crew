@@ -67,6 +67,11 @@ export async function createFirebaseStore(config) {
     saveVehicle: (uid, v) => { const { id, ...rest } = v; return setDoc(doc(db, "users", uid, "vehicles", id), rest); },
     deleteVehicle: (uid, id) => deleteDoc(doc(db, "users", uid, "vehicles", id)),
 
+    // big pictures (360° frames) each get their own document so they can stay sharp
+    saveMedia: (uid, id, data) => setDoc(doc(db, "users", uid, "media", id), { d: data }),
+    async getMedia(uid, id) { const s = await getDoc(doc(db, "users", uid, "media", id)); return s.exists() ? s.data().d : null; },
+    deleteMedia: (uid, id) => deleteDoc(doc(db, "users", uid, "media", id)),
+
     // drive-to-reveal map: roads you've driven, stored privately per person
     async loadExplored(uid) {
       const out = new Set();

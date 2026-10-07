@@ -44,6 +44,7 @@ export function createDemoStore() {
     { id: "s4", uid: "lize", kmh: 186, cls: "Track", car: "Rooi Gevaar", method: "GPS (auto)", venue: "Red Star Raceway", witnesses: ["thabo"], createdAt: now - 3 * H },
   ] };
 
+  const media = new Map();
   const explored = new Set();
   for (const r of [ROUTES.me, [P(-25.79, 28.23), P(-25.7479, 28.1876), P(-25.7461, 28.229)], [P(-25.8, 28.2), P(-25.7555, 28.2333), P(-25.7826, 28.2757)]])
     densify(r, 60).forEach((p) => explored.add(ghEncode(p.lat, p.lng)));
@@ -89,6 +90,9 @@ export function createDemoStore() {
     witnessBoard: (_c, coll, id, u) => { const b = boards[coll].find((x) => x.id === id); if (b && !b.witnesses.includes(u)) b.witnesses.push(u); emitBoard(coll); return ok(); },
     deleteBoard: (_c, coll, id) => { boards[coll] = boards[coll].filter((x) => x.id !== id); emitBoard(coll); return ok(); },
     onVehicles: (u, cb) => { if (!subs.vehicles.has(u)) subs.vehicles.set(u, new Set()); subs.vehicles.get(u).add(cb); emitVehicles(u); return () => subs.vehicles.get(u).delete(cb); },
+    saveMedia: (u, id, data) => { media.set(u + "/" + id, data); return ok(); },
+    getMedia: (u, id) => ok(media.get(u + "/" + id) || null),
+    deleteMedia: (u, id) => { media.delete(u + "/" + id); return ok(); },
     loadExplored: () => ok(new Set(explored)),
     addExplored: (_u, by) => { Object.values(by).flat().forEach((c) => explored.add(c)); return ok(); },
     getVehicles: (u) => ok((vehicles[u] || []).map((v) => ({ ...v }))),

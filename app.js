@@ -606,25 +606,41 @@ $("#form-convoy").addEventListener("submit", async (e) => {
 
 /* ---------------- 360° spin view ---------------- */
 const SPIN_FRAMES = 24;
-const SPIN_MAX_CHARS = 760000; // keep the whole car under Firestore's 1 MB document limit
+
+// Frames already loaded, so a re-render never downloads a 360° view twice.
+const spinCache = new Map();
+function loadSpinFrames(uid, spinId, count) {
+  const key = `${uid}/${spinId}`;
+  if (!spinCache.has(key)) spinCache.set(key, Promise.all(Array.from({ length: count }, (_, i) => S.store.getMedia(uid, `${spinId}_${i}`)))
+    .then((l) => l.filter(Boolean)).catch(() => { spinCache.delete(key); return []; }));
+  return spinCache.get(key);
+}
 
 // Interactive viewer: drag to turn, slow auto-turn until someone touches it.
-function spinViewer(frames, alt) {
-  const img = h("img", { class: "car-photo spin-img", src: frames[0], alt: `${alt}, 360° view`, draggable: "false" });
-  const wrap = h("div", { class: "spin", title: "Drag to spin" }, img, h("span", { class: "spin-badge" }, "360°"));
-  frames.forEach((f) => { const p = new Image(); p.src = f; }); // preload
-  let idx = 0, startX = 0, startIdx = 0, dragging = false, moved = false, timer = null;
-  const show = (i) => { idx = ((i % frames.length) + frames.length) % frames.length; img.src = frames[idx]; };
+// `src` is either an array of image URLs, or {uid, spinId, count, thumb} stored in the database.
+function spinViewer(src, alt) {
+  let frames = Array.isArray(src) ? src : [];
+  const img = h("img", { class: "car-photo spin-img", src: frames[0] || src.thumb || "", alt: `${alt}, 360° view`, draggable: "false" });
+  const badge = h("span", { class: "spin-badge" }, frames.length ? "360°" : "Loading 360°…");
+  const wrap = h("div", { class: "spin", title: "Drag to spin" }, img, badge);
+  let idx = 0, startX = 0, startIdx = 0, dragging = false, timer = null, touched = false;
+  const show = (i) => { if (!frames.length) return; idx = ((i % frames.length) + frames.length) % frames.length; img.src = frames[idx]; };
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const stopAuto = () => { if (timer) { clearInterval(timer); timer = null; } wrap.classList.add("touched"); };
-  if (!reduce) timer = setInterval(() => { if (!document.hidden && wrap.isConnected) show(idx + 1); else if (!wrap.isConnected) clearInterval(timer); }, 140);
-  wrap.addEventListener("pointerdown", (e) => { dragging = true; moved = false; startX = e.clientX; startIdx = idx; stopAuto(); wrap.setPointerCapture(e.pointerId); e.stopPropagation(); });
+  const startAuto = () => { if (!reduce && !touched && !timer) timer = setInterval(() => { if (!wrap.isConnected) return clearInterval(timer); if (!document.hidden) show(idx + 1); }, 130); };
+  const stopAuto = () => { touched = true; if (timer) { clearInterval(timer); timer = null; } wrap.classList.add("touched"); };
+  const ready = (list) => {
+    frames = list;
+    if (!frames.length) { badge.textContent = "360° unavailable"; return; }
+    badge.textContent = "360°";
+    frames.forEach((f) => { const p = new Image(); p.src = f; });
+    startAuto();
+  };
+  if (Array.isArray(src)) ready(src); else loadSpinFrames(src.uid, src.spinId, src.count).then(ready);
+  wrap.addEventListener("pointerdown", (e) => { dragging = true; startX = e.clientX; startIdx = idx; stopAuto(); wrap.setPointerCapture(e.pointerId); e.stopPropagation(); });
   wrap.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
+    if (!dragging || !frames.length) return;
     const step = Math.max(6, wrap.clientWidth / (frames.length * 1.2));
-    const d = Math.round((e.clientX - startX) / step);
-    if (d) moved = true;
-    show(startIdx - d);
+    show(startIdx - Math.round((e.clientX - startX) / step));
   });
   const end = (e) => { dragging = false; e.stopPropagation(); };
   wrap.addEventListener("pointerup", end);
@@ -633,59 +649,74 @@ function spinViewer(frames, alt) {
   return wrap;
 }
 
+const FRAME_MAX = 1000, FRAME_Q = 0.8;
+const waitFor = (target, ev, ms) => new Promise((res, rej) => {
+  const t = setTimeout(() => { target.removeEventListener(ev, ok); rej(new Error(`timeout:${ev}`)); }, ms);
+  function ok() { clearTimeout(t); res(); }
+  target.addEventListener(ev, ok, { once: true });
+});
+const nextPaint = (video) => new Promise((res) => {
+  if (video.requestVideoFrameCallback) { video.requestVideoFrameCallback(() => res()); setTimeout(res, 400); }
+  else requestAnimationFrame(() => requestAnimationFrame(res));
+});
+
 // Pull evenly spaced frames out of a walk-around video (or use picked photos in order).
 async function framesFromFiles(files, onProgress) {
   const list = [...files];
   if (list.length > 1 || (list[0] && list[0].type.startsWith("image/"))) {
     const imgs = list.filter((f) => f.type.startsWith("image/")).slice(0, 36);
     const out = [];
-    for (const f of imgs) { out.push(await shrinkImage(f, 480, 0.6)); onProgress?.(out.length, imgs.length); }
+    for (const f of imgs) { out.push(await shrinkImage(f, FRAME_MAX, FRAME_Q)); onProgress?.(out.length, imgs.length); }
     return out;
   }
-  const file = list[0];
-  const url = URL.createObjectURL(file);
+  const url = URL.createObjectURL(list[0]);
   const video = document.createElement("video");
-  video.muted = true; video.playsInline = true; video.preload = "auto"; video.src = url;
+  video.muted = true; video.playsInline = true; video.setAttribute("playsinline", ""); video.preload = "auto";
+  // iPhones only decode video that is actually on the page, so keep it there, invisible
+  video.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none";
+  document.body.append(video);
+  video.src = url;
   try {
-    await new Promise((res, rej) => { video.onloadeddata = res; video.onerror = () => rej(new Error("video")); setTimeout(() => rej(new Error("timeout")), 20000); });
-    // iOS only decodes frames after playback has started once
-    try { await video.play(); video.pause(); } catch {}
+    const failed = new Promise((_, rej) => video.addEventListener("error", () => rej(new Error("decode")), { once: true }));
+    await Promise.race([waitFor(video, "loadedmetadata", 45000), failed]);
+    try { await video.play(); } catch {}
+    video.pause();
     const dur = video.duration;
     if (!isFinite(dur) || dur < 2) throw new Error("short");
-    const w0 = video.videoWidth, h0 = video.videoHeight, s = Math.min(1, 480 / Math.max(w0, h0));
+    const w0 = video.videoWidth, h0 = video.videoHeight;
+    if (!w0 || !h0) throw new Error("size");
+    const s = Math.min(1, FRAME_MAX / Math.max(w0, h0));
     const c = document.createElement("canvas");
     c.width = Math.round(w0 * s); c.height = Math.round(h0 * s);
     const ctx = c.getContext("2d");
-    const raw = [];
+    const out = [];
     for (let i = 0; i < SPIN_FRAMES; i++) {
-      const t = Math.min(dur - 0.05, (dur * i) / SPIN_FRAMES + 0.02);
-      await new Promise((res) => { video.onseeked = res; video.currentTime = t; setTimeout(res, 3000); });
+      const t = Math.min(dur - 0.1, (dur * i) / SPIN_FRAMES + 0.05);
+      video.currentTime = t;
+      try { await waitFor(video, "seeked", 12000); } catch { /* slow phone: use whatever frame is showing */ }
+      await nextPaint(video);
       ctx.drawImage(video, 0, 0, c.width, c.height);
-      raw.push(c.toDataURL("image/jpeg", 0.6));
+      out.push(c.toDataURL("image/jpeg", FRAME_Q));
       onProgress?.(i + 1, SPIN_FRAMES);
     }
-    return raw;
-  } finally { URL.revokeObjectURL(url); video.removeAttribute("src"); }
+    return out;
+  } finally { URL.revokeObjectURL(url); video.removeAttribute("src"); video.load(); video.remove(); }
 }
 
-// Shrink the set until it fits in one database document.
-async function fitFrames(frames) {
-  const total = (f) => f.reduce((n, s) => n + s.length, 0);
-  let out = frames;
-  const recompress = async (list, q, max) => Promise.all(list.map((d) => new Promise((res) => {
-    const im = new Image();
-    im.onload = () => { const s = Math.min(1, max / Math.max(im.width, im.height)); const c = document.createElement("canvas"); c.width = Math.round(im.width * s); c.height = Math.round(im.height * s); c.getContext("2d").drawImage(im, 0, 0, c.width, c.height); res(c.toDataURL("image/jpeg", q)); };
-    im.src = d;
-  })));
-  if (total(out) > SPIN_MAX_CHARS) out = await recompress(out, 0.45, 420);
-  if (total(out) > SPIN_MAX_CHARS) out = out.filter((_, i) => i % 4 !== 3);
-  if (total(out) > SPIN_MAX_CHARS) out = await recompress(out, 0.38, 360);
+// A single frame must stay under the database's 1 MB per-document limit.
+async function capSize(dataUrl, maxChars = 900000) {
+  let out = dataUrl, q = FRAME_Q, max = FRAME_MAX;
+  while (out.length > maxChars && q > 0.4) {
+    q -= 0.12; max = Math.round(max * 0.9);
+    out = await new Promise((res) => { const im = new Image(); im.onload = () => { const s = Math.min(1, max / Math.max(im.width, im.height)); const c = document.createElement("canvas"); c.width = Math.round(im.width * s); c.height = Math.round(im.height * s); c.getContext("2d").drawImage(im, 0, 0, c.width, c.height); res(c.toDataURL("image/jpeg", q)); }; im.src = dataUrl; });
+  }
   return out;
 }
 
 /* ---------------- garage ---------------- */
-function carCard(v, onclick) {
-  const photo = v.spin?.length ? spinViewer(v.spin, v.name)
+function carCard(v, onclick, owner = S.uid) {
+  const photo = v.spinId ? spinViewer({ uid: owner, spinId: v.spinId, count: v.spinCount, thumb: v.spinThumb }, v.name)
+    : v.spin?.length ? spinViewer(v.spin, v.name)
     : v.photo ? h("img", { class: "car-photo", src: v.photo, alt: v.name }) : h("div", { class: "car-photo" }, initial(v.name));
   const spec = [v.year, v.make, v.model].filter(Boolean).join(" ");
   const extra = [v.colour, v.engine, v.power ? `${v.power} kW` : ""].filter(Boolean).join(" · ");
@@ -708,11 +739,11 @@ function renderGarage() {
   [...S.myVehicles].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0)).forEach((v) => list.append(carCard(v, () => openCar(v))));
 }
 const dlgCar = $("#dlg-car");
-let editing = null, photoData = "", spinData = [];
+let editing = null, photoData = "", spinNew = null, spinRemoved = false;
 function openCar(v) {
   editing = v || null;
   photoData = v?.photo || "";
-  spinData = v?.spin || [];
+  spinNew = null; spinRemoved = false;
   renderSpinEdit();
   $("#car-dlg-title").textContent = v ? "Edit car" : "Add car";
   $("#in-car-name").value = v?.name || "";
@@ -734,18 +765,26 @@ $("#btn-car-cancel").addEventListener("click", () => dlgCar.close());
 $("#in-car-photo").addEventListener("change", async (e) => {
   const f = e.target.files[0];
   if (!f) return;
-  try { photoData = await shrinkImage(f, 720, 0.72); const img = $("#car-photo-preview"); img.src = photoData; img.hidden = false; }
+  try { photoData = await capSize(await shrinkImage(f, 1400, 0.82), 700000); const img = $("#car-photo-preview"); img.src = photoData; img.hidden = false; }
   catch { toast("Couldn't read that photo. Try a JPG or PNG."); }
 });
+function currentSpin() {
+  if (spinNew) return spinNew;
+  if (spinRemoved || !editing) return null;
+  if (editing.spinId) return { uid: S.uid, spinId: editing.spinId, count: editing.spinCount, thumb: editing.spinThumb };
+  return editing.spin?.length ? editing.spin : null;
+}
 function renderSpinEdit(status) {
   const box = $("#spin-edit");
+  const cur = currentSpin();
+  const n = Array.isArray(cur) ? cur.length : cur?.count;
   box.replaceChildren(
     h("div", { class: "lbl" }, "360° view"),
-    spinData.length ? spinViewer(spinData, "Preview") : null,
-    h("div", { class: "fine" }, status || (spinData.length ? `${spinData.length} angles. Drag the preview to check it.` : "Record a 15–20 second video walking slowly around the car, keeping it in the middle of the screen.")),
+    ...(cur ? [spinViewer(cur, "Preview")] : []),
+    h("div", { class: "fine" }, status || (cur ? `${n} angles. Drag the preview to check it.` : "Record a 15–30 second video walking slowly around the car, keeping it in the middle of the screen.")),
     h("div", { class: "btn-row" },
-      h("label", { class: "btn ghost sm", for: "in-car-spin" }, spinData.length ? "Record again" : "Record 360° video"),
-      spinData.length ? h("button", { type: "button", class: "btn danger sm", onclick: () => { spinData = []; renderSpinEdit(); } }, "Remove") : null));
+      h("label", { class: "btn ghost sm", for: "in-car-spin" }, cur ? "Record again" : "Record 360° video"),
+      ...(cur ? [h("button", { type: "button", class: "btn danger sm", onclick: () => { spinNew = null; spinRemoved = true; renderSpinEdit(); } }, "Remove")] : [])));
 }
 $("#in-car-spin").addEventListener("change", async (e) => {
   const files = e.target.files;
@@ -753,16 +792,21 @@ $("#in-car-spin").addEventListener("change", async (e) => {
   const saveBtn = $("#form-car button[type=submit]");
   saveBtn.disabled = true;
   try {
-    renderSpinEdit("Making your 360° view…");
-    const frames = await framesFromFiles(files, (n, t) => { const f = $("#spin-edit .fine"); if (f) f.textContent = `Making your 360° view… ${n}/${t}`; });
+    renderSpinEdit("Making your 360° view… keep this screen open.");
+    const frames = await framesFromFiles(files, (n, t) => { const f = $("#spin-edit .fine"); if (f) f.textContent = `Making your 360° view… ${n}/${t}. Keep this screen open.`; });
     if (frames.length < 6) throw new Error("few");
-    spinData = await fitFrames(frames);
+    spinNew = await Promise.all(frames.map((f) => capSize(f)));
     renderSpinEdit();
     toast("360° view ready. Tap Save to keep it.");
-  } catch {
-    renderSpinEdit("Couldn't read that video. Try a shorter one (under 30 seconds), or pick 12–24 photos taken around the car.");
+  } catch (err) {
+    console.warn("360 failed", err);
+    renderSpinEdit("Couldn't read that video on this phone. Try recording it again in the normal Camera app at 1080p (not 4K or Cinematic), or pick 12–24 photos taken around the car.");
   } finally { saveBtn.disabled = false; e.target.value = ""; }
 });
+async function deleteSpinFrames(spinId, count) {
+  if (!spinId) return;
+  for (let i = 0; i < (count || SPIN_FRAMES); i++) await S.store.deleteMedia(S.uid, `${spinId}_${i}`).catch(() => {});
+}
 function shrinkImage(file, max, q) {
   return new Promise((res, rej) => {
     const img = new Image();
@@ -785,21 +829,42 @@ $("#form-car").addEventListener("submit", async (e) => {
     name: $("#in-car-name").value.trim(), make: $("#in-car-make").value.trim(), model: $("#in-car-model").value.trim(),
     year: $("#in-car-year").value.trim(), colour: $("#in-car-colour").value.trim(), engine: $("#in-car-engine").value.trim(),
     power: $("#in-car-power").value.trim(), mods: $("#in-car-mods").value.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 20),
-    active: $("#in-car-active").checked, photo: photoData, spin: spinData,
+    active: $("#in-car-active").checked, photo: photoData,
   };
   if (!v.name) return;
+  const saveBtn = $("#form-car button[type=submit]");
+  const old = editing ? { spinId: editing.spinId, count: editing.spinCount } : {};
+  saveBtn.disabled = true;
   try {
+    if (spinNew) {
+      const spinId = `s${Date.now().toString(36)}`;
+      for (let i = 0; i < spinNew.length; i++) {
+        saveBtn.textContent = `Uploading 360° ${i + 1}/${spinNew.length}`;
+        await S.store.saveMedia(S.uid, `${spinId}_${i}`, spinNew[i]);
+      }
+      Object.assign(v, { spinId, spinCount: spinNew.length, spinThumb: await capSize(await new Promise((res) => { const im = new Image(); im.onload = () => { const s = Math.min(1, 480 / Math.max(im.width, im.height)); const c = document.createElement("canvas"); c.width = Math.round(im.width * s); c.height = Math.round(im.height * s); c.getContext("2d").drawImage(im, 0, 0, c.width, c.height); res(c.toDataURL("image/jpeg", 0.7)); }; im.src = spinNew[0]; }), 120000) });
+      spinCache.set(`${S.uid}/${spinId}`, Promise.resolve(spinNew));
+    } else if (!spinRemoved && editing) {
+      if (editing.spinId) Object.assign(v, { spinId: editing.spinId, spinCount: editing.spinCount, spinThumb: editing.spinThumb || "" });
+      else if (editing.spin?.length) v.spin = editing.spin;
+    }
+    saveBtn.textContent = "Saving…";
     if (v.active) for (const o of S.myVehicles) if (o.id !== v.id && o.active) await S.store.saveVehicle(S.uid, { ...o, active: false });
     await S.store.saveVehicle(S.uid, v);
+    if ((spinNew || spinRemoved) && old.spinId) deleteSpinFrames(old.spinId, old.count);
     dlgCar.close();
     toast(`${v.name} saved`);
-  } catch { toast("Couldn't save. The photo might be too big; try another one."); }
+  } catch (err) {
+    console.warn("save failed", err);
+    toast("Couldn't save. Check your signal and try again.");
+  } finally { saveBtn.disabled = false; saveBtn.textContent = "Save"; }
 });
 $("#btn-car-delete").addEventListener("click", async (e) => {
   const b = e.currentTarget;
   if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Tap again to delete"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Delete"; }, 3000); return; }
   b.dataset.armed = ""; b.textContent = "Delete";
   await S.store.deleteVehicle(S.uid, editing.id);
+  deleteSpinFrames(editing.spinId, editing.spinCount);
   dlgCar.close();
   toast("Car removed");
 });
@@ -963,7 +1028,7 @@ for (const key of Object.keys(BOARDS)) {
   $(`#in-${key}-photo`).addEventListener("change", async (e) => {
     const f = e.target.files[0];
     if (!f) return;
-    try { photo = await shrinkImage(f, 720, 0.72); const img = $(`#${key}-photo-preview`); img.src = photo; img.hidden = false; }
+    try { photo = await capSize(await shrinkImage(f, 1200, 0.8), 700000); const img = $(`#${key}-photo-preview`); img.src = photo; img.hidden = false; }
     catch { toast("Couldn't read that photo. Try a JPG or PNG."); }
   });
   $(`#form-${key}`).addEventListener("submit", async (e) => {
@@ -1141,7 +1206,7 @@ async function openMember(id) {
   const cars = await S.store.getVehicles(id).catch(() => []);
   const box = $("#member-cars");
   if (!box) return;
-  box.replaceChildren(...(cars.length ? cars.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0)).map((v) => carCard(v)) : [h("div", { class: "s", style: "color:var(--muted)" }, "No cars in the garage yet.")]));
+  box.replaceChildren(...(cars.length ? cars.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0)).map((v) => carCard(v, null, id)) : [h("div", { class: "s", style: "color:var(--muted)" }, "No cars in the garage yet.")]));
 }
 
 // refresh "x min ago" labels and stale markers
