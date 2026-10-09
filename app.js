@@ -1,4 +1,5 @@
 import { firebaseConfig } from "./firebase-config.js";
+import { VAPID_PUBLIC, NOTIFY_URL } from "./push-config.js";
 import { haversine, ghEncode, ghBounds, cellAreaKm2, fmtKm, fmtAgo, CELL_PREC, PREFIX_PREC } from "./geo.js";
 
 const $ = (s) => document.querySelector(s);
@@ -197,11 +198,13 @@ async function enterApp() {
       return;
     }
     noteRuns(list);
+    setTimeout(applyDeepLink, 0);
     renderMembers(); renderConvoyOverlay(); renderLiveStrip(); followWatched(); renderActiveView();
     if (!S.didFit && !S.pos) { S.didFit = true; fitCrew(); }
   }, () => toast("Lost connection to the crew. Retrying…")));
   S.unsubs.push(S.store.onMeets(S.crew.id, (list) => {
     S.meets = list.sort((a, b) => a.when - b.when);
+    setTimeout(applyDeepLink, 0);
     renderMeetPins();
     if (S.view === "convoy") renderDrive();
   }));
@@ -223,6 +226,8 @@ async function enterApp() {
   }));
   startGps();
   setView(lsGet("view", "map"));
+  handleDeepLink();
+  refreshPush();
 }
 
 /* ---------------- map ---------------- */
@@ -1008,7 +1013,11 @@ $("#form-meet").addEventListener("submit", async (e) => {
   if (!data.title) return;
   const editing = meetDraft.editing;
   if (editing) await S.store.updateMeet(S.crew.id, editing.id, data);
-  else await S.store.createMeet(S.crew.id, { ...data, hostId: S.uid, going: [S.uid], createdAt: Date.now() });
+  else {
+    const id = await S.store.createMeet(S.crew.id, { ...data, hostId: S.uid, going: [S.uid], createdAt: Date.now() });
+    const d = new Date(when);
+    notifyCrew("meet", { title: `📅 New meet: ${data.title}`, body: `${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]} ${fmtTime(when)}${data.place.label ? ` · ${data.place.label}` : ""} · tap to see who's going`, url: `./?meet=${id}`, tag: `meet-${id}` });
+  }
   dlgMeet.close();
   meetDraft = { place: null, editing: null };
   // show it where it landed
@@ -1733,6 +1742,7 @@ function startSession() {
   renderSession();
   runStatus = { state: "idle" };
   sendRun();
+  if (!S.ghost && !S.homeHidden) notifyCrew("run", { title: `🔴 ${S.profile.callsign} is live`, body: `Speed run${session.venue ? ` at ${session.venue}` : ""}${session.car ? ` in the ${session.car}` : ""} · tap to watch`, url: `./?watch=${S.uid}`, tag: `run-${S.uid}` });
   toast(S.ghost || S.homeHidden ? "Speed session started. You're hidden, so the crew can't watch this one." : "Speed session started. The crew can watch you live.");
 }
 
@@ -1814,9 +1824,118 @@ $("#btn-home-clear").addEventListener("click", () => { home = null; lsSet("homeG
 $("#in-home-on").addEventListener("change", (e) => { if (!home) return; home.on = e.target.checked; lsSet("homeGhost", home); renderHome(); renderHomeCircle(); maybeSend(true); });
 $("#in-home-radius").addEventListener("change", (e) => { if (!home) return; home.radius = Number(e.target.value); lsSet("homeGhost", home); renderHome(); renderHomeCircle(); maybeSend(true); });
 
+/* ---------------- notifications ---------------- */
+const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+let pushPrefs = lsGet("pushPrefs", { run: true, meet: true });
+function b64uToBytes(s) { const b = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)); return Uint8Array.from(b, (c) => c.charCodeAt(0)); }
+async function currentSub() {
+  if (DEMO) return lsGet("demoPush", false) ? { unsubscribe: async () => true } : null;
+  if (!pushSupported() || Notification.permission !== "granted") return null;
+  const reg = await navigator.serviceWorker.getRegistration();
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+async function savePushSub(sub) {
+  if (!S.crew) return;
+  await S.store.savePush(S.crew.id, S.uid, { sub: JSON.stringify(sub), prefs: pushPrefs, platform: isIOS() ? "ios" : /android/i.test(navigator.userAgent) ? "android" : "other", updatedAt: Date.now() });
+}
+async function turnOnPush() {
+  if (DEMO) {
+    lsSet("demoPush", true); renderPush();
+    toast("Preview: on. Example → 🔴 Stiaan is live · Speed run at Zwartkops · tap to watch");
+    return;
+  }
+  try {
+    if (Notification.permission === "denied") { renderPush("blocked"); return; }
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") { renderPush(perm === "denied" ? "blocked" : "off"); return; }
+    const reg = await navigator.serviceWorker.register("sw.js");
+    await navigator.serviceWorker.ready;
+    const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(VAPID_PUBLIC) });
+    await savePushSub(sub);
+    toast("Notifications on");
+  } catch (e) {
+    console.warn("push", e);
+    toast("Couldn't turn on notifications on this phone.");
+  }
+  renderPush();
+}
+async function turnOffPush() {
+  if (DEMO) { lsSet("demoPush", false); toast("Notifications off"); renderPush(); return; }
+  try { const sub = await currentSub(); if (sub) await sub.unsubscribe(); } catch {}
+  if (S.crew) await S.store.deletePush(S.crew.id, S.uid).catch(() => {});
+  toast("Notifications off");
+  renderPush();
+}
+// keep the crew's copy of this phone's subscription fresh (phones rotate them now and then)
+async function refreshPush() { try { const sub = await currentSub(); if (sub) await savePushSub(sub); } catch {} }
+
+async function renderPush(force) {
+  const box = $("#push-box");
+  if (!box) return;
+  const sub = force ? null : await currentSub().catch(() => null);
+  const state = force || (DEMO ? (sub ? "on" : "off") : !pushSupported() ? (isIOS() && !isStandalone() ? "ios-browser" : "unsupported")
+    : Notification.permission === "denied" ? "blocked" : sub ? "on" : "off");
+  const pref = (key, label) => h("label", { class: "check" }, h("input", { type: "checkbox", id: `push-${key}`, ...(pushPrefs[key] ? { checked: true } : {}), onchange: async (e) => {
+    pushPrefs = { ...pushPrefs, [key]: e.target.checked }; lsSet("pushPrefs", pushPrefs);
+    const s = await currentSub(); if (s) await savePushSub(s);
+  } }), label);
+  const text = {
+    on: "On. You'll get a notification even when THE CREW is closed.",
+    off: "Get a notification when someone goes live on a speed run or posts a meet, even when the app is closed.",
+    blocked: isIOS() ? "Notifications are blocked. Open iPhone Settings → Notifications → THE CREW → Allow Notifications, then come back." : "Notifications are blocked. Tap the lock icon by the address (or phone Settings → Apps → Chrome → Notifications) and allow them for this site.",
+    "ios-browser": "On iPhone, notifications only work when THE CREW is opened from your home screen. In Safari tap Share → Add to Home Screen, then open it from there.",
+    unsupported: "This browser can't show notifications. On Android use Chrome; on iPhone add THE CREW to your home screen (iOS 16.4 or newer).",
+  }[state];
+  box.replaceChildren(
+    h("p", { class: "fine", style: "font-size:14px" }, text),
+    ...(state === "on" ? [pref("run", "Someone goes live on a speed run"), pref("meet", "A new meet is posted")] : []),
+    h("div", { class: "btn-row" },
+      state === "off" ? h("button", { type: "button", class: "btn primary sm", onclick: turnOnPush }, "Turn on notifications")
+        : state === "on" ? h("button", { type: "button", class: "btn ghost sm", onclick: turnOffPush }, "Turn off") : null),
+    ...(state === "on" && !NOTIFY_URL ? [h("p", { class: "fine" }, "Sending gets switched on shortly. You're all set, nothing more to do.")] : []));
+}
+
+// Ask the sender to notify the rest of the crew.
+async function notifyCrew(type, msg) {
+  if (!NOTIFY_URL || !S.crew || DEMO) return;
+  try {
+    const token = await S.store.getToken();
+    if (!token) return;
+    await fetch(NOTIFY_URL.replace(/\/$/, "") + "/notify", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ crew: S.crew.id, type, ...msg }), keepalive: true,
+    });
+  } catch (e) { console.warn("notify", e); }
+}
+
+// Open what a tapped notification points at: ?watch=<uid> or ?meet=<id>
+function handleDeepLink(href) {
+  let u;
+  try { u = new URL(href || location.href); } catch { return; }
+  const watch = u.searchParams.get("watch"), meet = u.searchParams.get("meet");
+  if (watch) S.pendingWatch = watch;
+  if (meet) S.pendingMeet = meet;
+  if (watch || meet) history.replaceState(null, "", location.pathname);
+  applyDeepLink();
+}
+function applyDeepLink() {
+  if (!S.crew) return;
+  if (S.pendingWatch) {
+    const m = S.members.get(S.pendingWatch);
+    if (m && isLiveRun(m)) { watchRun(m.id); S.pendingWatch = null; }
+    else if (m && S.members.size && !m.run) { toast(`${m.callsign}'s run has already ended`); S.pendingWatch = null; }
+  }
+  if (S.pendingMeet && S.meets.length) {
+    if (S.meets.some((x) => x.id === S.pendingMeet)) { setView("convoy"); setSeg("meets"); openMeetView(S.pendingMeet); }
+    S.pendingMeet = null;
+  }
+}
+navigator.serviceWorker?.addEventListener("message", (e) => { if (e.data?.type === "open") handleDeepLink(e.data.url); });
+
 /* ---------------- crew ---------------- */
 function renderCrew() {
   renderHome();
+  renderPush();
   const ul = $("#crew-list");
   const list = [...S.members.values()].sort((a, b) => (a.id === S.uid ? -1 : b.id === S.uid ? 1 : (b.updatedAt || 0) - (a.updatedAt || 0)));
   ul.replaceChildren(...list.map((m) => {

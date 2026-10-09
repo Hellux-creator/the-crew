@@ -30,6 +30,7 @@ export async function createFirebaseStore(config) {
     signInAnon: () => signInAnonymously(auth),
     signInGoogle: () => signInWithPopup(auth, new GoogleAuthProvider()),
     signOut: () => signOut(auth),
+    getToken: () => (auth.currentUser ? auth.currentUser.getIdToken() : Promise.resolve(null)),
 
     async getProfile(uid) { const s = await getDoc(doc(db, "users", uid)); return s.exists() ? s.data() : null; },
     saveProfile: (uid, data) => setDoc(doc(db, "users", uid), data, { merge: true }),
@@ -62,6 +63,10 @@ export async function createFirebaseStore(config) {
     updateMeet: (code, id, data) => updateDoc(doc(db, "crews", code, "meets", id), data),
     rsvpMeet: (code, id, uid, going) => updateDoc(doc(db, "crews", code, "meets", id), { going: going ? arrayUnion(uid) : arrayRemove(uid) }),
     deleteMeet: (code, id) => deleteDoc(doc(db, "crews", code, "meets", id)),
+
+    // notifications: each person's phone subscription, readable by the crew's sender
+    savePush: (code, uid, data) => setDoc(doc(db, "crews", code, "push", uid), data, { merge: true }),
+    deletePush: (code, uid) => deleteDoc(doc(db, "crews", code, "push", uid)),
 
     // leaderboards: coll is "bass" or "speed"
     onBoard: (code, coll, cb, err) => onSnapshot(collection(db, "crews", code, coll), (s) => cb(list(s)), err),
