@@ -111,6 +111,8 @@ export function createDemoStore() {
     witnessBoard: (_c, coll, id, u) => { const b = boards[coll].find((x) => x.id === id); if (b && !b.witnesses.includes(u)) b.witnesses.push(u); emitBoard(coll); return ok(); },
     deleteBoard: (_c, coll, id) => { boards[coll] = boards[coll].filter((x) => x.id !== id); emitBoard(coll); return ok(); },
     onVehicles: (u, cb) => { if (!subs.vehicles.has(u)) subs.vehicles.set(u, new Set()); subs.vehicles.get(u).add(cb); emitVehicles(u); return () => subs.vehicles.get(u).delete(cb); },
+    getToken: () => ok("demo-token"),
+    savePush: () => ok(), deletePush: () => ok(),
     onMeets: (_c, cb) => { meetSubs.add(cb); emitMeets(); return () => meetSubs.delete(cb); },
     createMeet: (_c, data) => { const id = "m" + Date.now(); meets.push({ id, ...data }); emitMeets(); return ok(id); },
     updateMeet: (_c, id, data) => { const m = meets.find((x) => x.id === id); if (m) Object.assign(m, data); emitMeets(); return ok(); },
