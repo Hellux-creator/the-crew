@@ -210,6 +210,7 @@ async function enterApp() {
     renderConvoyOverlay(); renderActiveView(); updateWakeLock();
   }));
   S.explored = await S.store.loadExplored(S.uid).catch(() => new Set());
+  for (const c of lsGet(`pendingCells:${S.uid}`, [])) { S.explored.add(c); S.pendingCells.add(c); } // from a drive that didn't finish saving
   if (S.fog) S.fogLayer.redraw();
   for (const key of Object.keys(BOARDS)) S.unsubs.push(S.store.onBoard(S.crew.id, BOARDS[key].coll, (list) => {
     S.boards[key] = list;
@@ -553,8 +554,27 @@ function onFix(p) {
   S.pos = fix;
   speedFeed(fix, rawSpeed != null ? rawSpeed : fix.speed);
   if (fix.acc < 50) {
-    const cell = ghEncode(fix.lat, fix.lng, CELL_PREC);
-    if (!S.explored.has(cell)) { S.explored.add(cell); S.pendingCells.add(cell); if (S.fog) { S.fogLayer.redraw(); renderFogStat(); } }
+    // Phones often report every 5–10 s, which at speed skips whole road squares.
+    // Fill in the straight line between this reading and the last good one.
+    const prev = S.lastRevealFix;
+    let pts = [fix];
+    if (prev) {
+      const d = haversine(prev, fix), dt = (fix.t - prev.t) / 1000;
+      if (d > 60 && d < 2500 && dt > 0 && dt < 90 && d / dt < 75) {
+        const n = Math.ceil(d / 50);
+        pts = Array.from({ length: n }, (_, i) => ({ lat: prev.lat + (fix.lat - prev.lat) * (i + 1) / n, lng: prev.lng + (fix.lng - prev.lng) * (i + 1) / n }));
+      }
+    }
+    S.lastRevealFix = fix;
+    let added = false;
+    for (const p of pts) {
+      const cell = ghEncode(p.lat, p.lng, CELL_PREC);
+      if (!S.explored.has(cell)) { S.explored.add(cell); S.pendingCells.add(cell); added = true; }
+    }
+    if (added) {
+      lsSet(`pendingCells:${S.uid}`, [...S.pendingCells].slice(-4000)); // survive the app being closed before saving
+      if (S.fog) { S.fogLayer.redraw(); renderFogStat(); }
+    }
   }
   renderMe();
   if (first) S.map.setView([fix.lat, fix.lng], 14);
@@ -600,8 +620,10 @@ async function flushExplored() {
   S.pendingCells.clear();
   try { await S.store.addExplored(S.uid, by); }
   catch { sent.forEach((c) => S.pendingCells.add(c)); }
+  lsSet(`pendingCells:${S.uid}`, [...S.pendingCells]);
 }
-setInterval(flushExplored, 30000);
+setInterval(flushExplored, 10000);
+window.addEventListener("pagehide", () => flushExplored());
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) flushExplored();
   else { maybeSend(true); updateWakeLock(); }
