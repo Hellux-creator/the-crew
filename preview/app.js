@@ -2088,7 +2088,6 @@ const BADGES = [
   { id: "mods5", icon: "🔧", name: "Gearhead", desc: "Log 5 mods in your mod log", stat: "mods", goal: 5 },
   { id: "launch", icon: "🚀", name: "Launch Control", desc: "Record a 0–100 run", stat: "launches", goal: 1 },
   { id: "record", icon: "🏆", name: "Record Holder", desc: "Hold #1 on any crew board right now", live: holdsRecord },
-  { id: "appfounder", icon: "🛠️", name: "App Founder", desc: "Built THE CREW app", live: (uid) => S.crew?.ownerId === uid },
   { id: "founder", icon: "⭐", name: "Crew Founder", desc: "One of the founders of this crew", live: (uid) => isFounder(uid) },
 ];
 const badgeEarned = (b, uid) => (b.live ? !!b.live(uid) : (statsFor(uid)[b.stat] || 0) >= b.goal);
@@ -2122,7 +2121,7 @@ function renderBadges() {
 let founders = [], founderClaims = [];
 const MAX_FOUNDERS = 2;
 const isFounder = (uid) => founders.some((f) => f.id === uid);
-const roleTag = (uid) => (S.crew?.ownerId === uid ? "App founder" : isFounder(uid) ? "Founder" : "");
+const roleTag = (uid) => (isFounder(uid) ? "Founder" : "");
 const claimLink = (token) => `${location.origin}${location.pathname}?claim=${token}&crew=${S.crew.id}`;
 function renderFounders() {
   const box = $("#founders");
@@ -2674,6 +2673,8 @@ async function syncReminders() {
 /* ---------------- crew ---------------- */
 function renderCrew() {
   renderFounders();
+  const maker = S.members.get(S.crew.ownerId)?.callsign;
+  $("#app-credit").textContent = maker ? `THE CREW app · built by ${S.crew.ownerId === S.uid ? "you" : maker} 🛠️` : "";
   renderHome();
   renderPush();
   const ul = $("#crew-list");

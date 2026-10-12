@@ -408,3 +408,4 @@ select{font:inherit;color:var(--fg);background:var(--panel-2);border:1px solid v
 .crewname{min-width:0;flex:1;font-size:20px}
 #crew-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .top-right{flex:none}
+.app-credit{margin:18px 0 4px;text-align:center;font:600 12px/1 var(--f-body);letter-spacing:.08em;text-transform:uppercase;color:color-mix(in srgb,var(--accent) 70%,var(--muted))}
