@@ -49,22 +49,21 @@ export function createDemoStore() {
     { id: "b5", uid: "thabo", db: 129.5, hz: 55, cls: "Daily", car: "Pocket Rocket", setup: "Factory + 8\" under-seat", venue: "Zwartkops raceway", witnesses: ["ruan"], createdAt: now - 90 * 60000 },
   ], speed: [
     { id: "s1", uid: "ruan", kmh: 218, cls: "Track", car: "Golf 7 GTI", method: "GPS (auto)", venue: "Zwartkops", witnesses: ["lize"], createdAt: now - 30 * H },
+    { id: "s0", uid: "dewald", kmh: 226, cls: "Airfield", car: "Big Grunt", method: "Dragy", venue: "Wonderboom", witnesses: ["ruan"], createdAt: now - 9 * 24 * H },
     { id: "s2", uid: "thabo", kmh: 204, cls: "Track", car: "Pocket Rocket", method: "Dragy", venue: "Zwartkops", witnesses: ["ruan", "dewald"], createdAt: now - 30 * H },
     { id: "s3", uid: "dewald", kmh: 171, cls: "Drag strip", car: "Big Grunt", method: "GPS (auto)", venue: "Tarlton", witnesses: [], createdAt: now - 6 * H },
     { id: "s4", uid: "lize", kmh: 186, cls: "Track", car: "Rooi Gevaar", method: "GPS (auto)", venue: "Red Star Raceway", witnesses: ["thabo"], createdAt: now - 3 * H },
   ], launch: [
-    { id: "q1", uid: "ruan", t100: 5.62, qm: 13.71, trap: 166, cls: "Drag strip", car: "Golf 7 GTI", venue: "Tarlton", witnesses: ["lize"], createdAt: now - 50 * H },
-    { id: "q2", uid: "jaco", t100: 4.94, qm: 13.02, trap: 178, cls: "Drag strip", car: "Silver Bullet", venue: "Tarlton", witnesses: ["ruan", "dewald"], createdAt: now - 49 * H },
-    { id: "q3", uid: "lize", t100: 6.81, qm: 14.88, trap: 152, cls: "Drag strip", car: "Rooi Gevaar", venue: "Tarlton", witnesses: [], createdAt: now - 7 * H },
-    { id: "q4", uid: "dewald", t100: 8.9, qm: null, trap: null, cls: "Airfield", car: "Big Grunt", venue: "Wonderboom airfield", witnesses: [], createdAt: now - 4 * H },
+    { id: "q1", uid: "ruan", t60: 2.98, t100: 5.62, qm: 13.71, trap: 166, cls: "Drag strip", car: "Golf 7 GTI", venue: "Tarlton", witnesses: ["lize"], createdAt: now - 50 * H },
+    { id: "q2", uid: "jaco", t60: 2.61, t100: 4.94, qm: 13.02, trap: 178, cls: "Drag strip", car: "Silver Bullet", venue: "Tarlton", witnesses: ["ruan", "dewald"], createdAt: now - 49 * H },
+    { id: "q3", uid: "lize", t60: 3.55, t100: 6.81, qm: 14.88, trap: 152, cls: "Drag strip", car: "Rooi Gevaar", venue: "Tarlton", witnesses: [], createdAt: now - 7 * H },
+    { id: "q4", uid: "dewald", t60: 4.4, t100: 8.9, qm: null, trap: null, cls: "Airfield", car: "Big Grunt", venue: "Wonderboom airfield", witnesses: [], createdAt: now - 4 * H },
   ] };
-  const mon = (off) => { const t = new Date(); t.setDate(1); t.setMonth(t.getMonth() + off); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}`; };
-  let votes = [
-    { voter: "ruan", for: "jaco", month: mon(-1) }, { voter: "lize", for: "jaco", month: mon(-1) }, { voter: "dewald", for: "ruan", month: mon(-1) },
-    { voter: "ruan", for: "dewald", month: mon(0) }, { voter: "thabo", for: "dewald", month: mon(0) }, { voter: "jaco", for: "ruan", month: mon(0) },
-  ].map((v) => ({ id: `${v.month}_${v.voter}`, at: now, ...v }));
-  const voteSubs = new Set();
-  const emitVotes = () => voteSubs.forEach(([months, cb]) => cb(votes.filter((v) => months.includes(v.month)).map((v) => ({ ...v }))));
+  let founders = [{ id: "dewald", token: "x", at: now - 40 * 86400000 }];
+  let claims = [{ id: "demo-link-1", createdAt: now - 3600000, note: "For Ruan" }];
+  const fSubs = new Set(), cSubs = new Set();
+  const emitF = () => fSubs.forEach((cb) => cb(founders.map((x) => ({ ...x }))));
+  const emitC = () => cSubs.forEach((cb) => cb(claims.map((x) => ({ ...x }))));
   const M = 60000;
   let chat = [
     { id: "c1", uid: "dewald", name: "Dewald", text: "Who's keen for Hartbeespoort on Sunday? Breakfast at the dam 🍳", at: now - 26 * 60 * M },
@@ -139,8 +138,12 @@ export function createDemoStore() {
     onChat: (_c, cb) => { chatSubs.add(cb); emitChat(); return () => chatSubs.delete(cb); },
     sendChat: (_c, data) => { const id = "c" + Date.now(); chat.push({ id, ...data }); emitChat(); return ok(id); },
     deleteChat: (_c, id) => { chat = chat.filter((x) => x.id !== id); emitChat(); return ok(); },
-    onVotes: (_c, months, cb) => { const s = [months, cb]; voteSubs.add(s); emitVotes(); return () => voteSubs.delete(s); },
-    castVote: (_c, month, u, forUid) => { votes = votes.filter((v) => v.id !== `${month}_${u}`); votes.push({ id: `${month}_${u}`, month, voter: u, for: forUid, at: Date.now() }); emitVotes(); return ok(); },
+    onFounders: (_c, cb) => { fSubs.add(cb); emitF(); return () => fSubs.delete(cb); },
+    onFounderClaims: (_c, cb) => { cSubs.add(cb); emitC(); return () => cSubs.delete(cb); },
+    createFounderClaim: (_c, token, data) => { claims.push({ id: token, ...data }); emitC(); return ok(); },
+    deleteFounderClaim: (_c, token) => { claims = claims.filter((x) => x.id !== token); emitC(); return ok(); },
+    removeFounder: (_c, u) => { founders = founders.filter((x) => x.id !== u); emitF(); return ok(); },
+    claimFounder: (_c, token, u) => { if (!claims.some((x) => x.id === token)) return Promise.reject(new Error("used")); claims = claims.filter((x) => x.id !== token); founders.push({ id: u, token, at: Date.now() }); emitF(); emitC(); return ok(); },
     savePush: () => ok(), deletePush: () => ok(),
     onMeets: (_c, cb) => { meetSubs.add(cb); emitMeets(); return () => meetSubs.delete(cb); },
     createMeet: (_c, data) => { const id = "m" + Date.now(); meets.push({ id, ...data }); emitMeets(); return ok(id); },

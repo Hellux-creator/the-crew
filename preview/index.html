@@ -161,7 +161,6 @@
   <section id="view-garage" class="view sheet" hidden>
     <div class="h-row"><h2 class="h">Garage</h2><button id="btn-addcar" class="btn primary sm">Add car</button></div>
     <div id="garage-list" class="cars"></div>
-    <div id="cotm"></div>
   </section>
 
   <section id="view-explore" class="view sheet" hidden>
@@ -181,13 +180,15 @@
 
   <section id="view-speed" class="view sheet" hidden>
     <div class="h-row"><h2 class="h">Speed</h2><button id="btn-addspeed" class="btn ghost sm">Log manually</button></div>
-    <div class="seg seg3" role="tablist" aria-label="Board">
+    <div class="seg seg3 seg4" role="tablist" aria-label="Board">
       <button data-mode="speed" role="tab" aria-selected="true">Top speed</button>
+      <button data-mode="t60" role="tab" aria-selected="false">0–60</button>
       <button data-mode="t100" role="tab" aria-selected="false">0–100</button>
       <button data-mode="qm" role="tab" aria-selected="false">¼ mile</button>
     </div>
     <div id="speed-live" class="speed-live" hidden></div>
     <div id="speed-session"></div>
+    <div id="speed-period" class="speed-period"></div>
     <div id="pane-speed">
       <div class="chips" id="speed-classes" role="group" aria-label="Class"></div>
       <div id="speed-podium"></div>
@@ -195,6 +196,14 @@
       <ol id="speed-board" class="board"></ol>
       <h3 class="h3" id="speed-runs-h" hidden>All runs</h3>
       <ul id="speed-runs" class="runs"></ul>
+    </div>
+    <div id="pane-t60" hidden>
+      <div class="chips" id="t60-classes" role="group" aria-label="Class"></div>
+      <div id="t60-podium"></div>
+      <h3 class="h3" id="t60-rest-h" hidden>The rest</h3>
+      <ol id="t60-board" class="board"></ol>
+      <h3 class="h3" id="t60-runs-h" hidden>All runs</h3>
+      <ul id="t60-runs" class="runs"></ul>
     </div>
     <div id="pane-t100" hidden>
       <div class="chips" id="t100-classes" role="group" aria-label="Class"></div>
@@ -251,6 +260,8 @@
       <button id="btn-share" class="btn primary sm">Share</button>
     </div>
     <ul id="crew-list" class="crew-list"></ul>
+    <h3 class="h3">Crew founders</h3>
+    <div class="card" id="founders"></div>
     <h3 class="h3">You</h3>
     <form id="form-me" class="stack">
       <label for="in-me-callsign" class="lbl">Name</label>

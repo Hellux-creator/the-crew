@@ -11,7 +11,7 @@ export async function createFirebaseStore(config) {
   const {
     initializeFirestore, persistentLocalCache, doc, getDoc, setDoc, updateDoc,
     deleteDoc, collection, onSnapshot, query, where, getDocs, addDoc,
-    arrayUnion, arrayRemove, orderBy, limit,
+    arrayUnion, arrayRemove, orderBy, limit, writeBatch,
   } = await import(`${base}/firebase-firestore.js`);
 
   const app = initializeApp(config);
@@ -73,9 +73,18 @@ export async function createFirebaseStore(config) {
     async sendChat(code, data) { const r = await addDoc(collection(db, "crews", code, "chat"), data); return r.id; },
     deleteChat: (code, id) => deleteDoc(doc(db, "crews", code, "chat", id)),
 
-    // Car of the Month: one vote per person per month, doc id = month_uid
-    onVotes: (code, months, cb, err) => onSnapshot(query(collection(db, "crews", code, "votes"), where("month", "in", months)), (s) => cb(list(s)), err),
-    castVote: (code, month, uid, forUid) => setDoc(doc(db, "crews", code, "votes", `${month}_${uid}`), { month, voter: uid, for: forUid, at: Date.now() }),
+    // crew founders: one-use claim links made by whoever set the crew up
+    onFounders: (code, cb, err) => onSnapshot(collection(db, "crews", code, "founders"), (s) => cb(list(s)), err),
+    onFounderClaims: (code, cb, err) => onSnapshot(collection(db, "crews", code, "claims"), (s) => cb(list(s)), err),
+    createFounderClaim: (code, token, data) => setDoc(doc(db, "crews", code, "claims", token), data),
+    deleteFounderClaim: (code, token) => deleteDoc(doc(db, "crews", code, "claims", token)),
+    removeFounder: (code, uid) => deleteDoc(doc(db, "crews", code, "founders", uid)),
+    async claimFounder(code, token, uid) {
+      const b = writeBatch(db); // claim + use up the link in one go
+      b.set(doc(db, "crews", code, "founders", uid), { token, at: Date.now() });
+      b.delete(doc(db, "crews", code, "claims", token));
+      await b.commit();
+    },
 
     // leaderboards: coll is "bass", "speed" or "launch"
     onBoard: (code, coll, cb, err) => onSnapshot(collection(db, "crews", code, coll), (s) => cb(list(s)), err),

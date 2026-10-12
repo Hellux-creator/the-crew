@@ -10,7 +10,7 @@ const STALE_MS = 5 * 60 * 1000, GONE_MS = 2 * 60 * 60 * 1000, SEEN_MS = 24 * 60 
 const S = {
   store: null, uid: null, profile: null, crew: null,
   members: new Map(), convoys: [], myVehicles: [],
-  boards: { bass: [], speed: [], t100: [], qm: [] }, boardClass: { bass: "All", speed: "All", t100: "All", qm: "All" }, speedMode: "speed",
+  boards: { bass: [], speed: [], t60: [], t100: [], qm: [] }, boardClass: { bass: "All", speed: "All", t60: "All", t100: "All", qm: "All" }, speedMode: "speed", period: "week",
   explored: new Set(), pendingCells: new Set(),
   pos: null, lastFix: null, lastSent: null, km: 0,
   ghost: false, fog: false, mapTheme: "night", meets: [], seg: "meets", homeHidden: false, view: "map", pick: false, pendingDest: null,
@@ -121,6 +121,8 @@ function showOnboard(step) {
   $("#ob-crew").hidden = step !== "crew";
   $("#ob-error").hidden = true;
   if (step === "callsign") $("#in-callsign").focus();
+  const pc = lsGet("pendingClaim", null);
+  if (step === "crew" && pc?.crew && !$("#in-code").value) $("#in-code").value = pc.crew;
 }
 function obError(msg) { const e = $("#ob-error"); e.textContent = msg; e.hidden = false; }
 
@@ -173,7 +175,7 @@ function teardown() {
 async function enterApp() {
   teardown();
   S.statsMerged = false; S.meetsLoaded = false;
-  chatMsgs = []; chatFirst = true; votes = [];
+  chatMsgs = []; chatFirst = true; founders = []; founderClaims = [];
   $("#onboard").hidden = true;
   $("#app").hidden = false;
   $("#demo-banner").hidden = !DEMO;
@@ -231,12 +233,12 @@ async function enterApp() {
     if (S.view === "explore") renderBadges();
   }));
   S.unsubs.push(S.store.onChat(S.crew.id, onChatList, () => {}));
-  S.unsubs.push(S.store.onVotes(S.crew.id, [monthKey(0), monthKey(-1)], (list) => {
-    votes = list;
-    renderMembers();
-    if (S.view === "garage") renderCotm();
+  S.unsubs.push(S.store.onFounders(S.crew.id, (list) => {
+    founders = list;
     if (S.view === "crew") renderCrew();
+    if (S.view === "explore") renderBadges();
   }, () => {}));
+  if (S.crew.ownerId === S.uid) S.unsubs.push(S.store.onFounderClaims(S.crew.id, (list) => { founderClaims = list; if (S.view === "crew") renderFounders(); }, () => {}));
   S.unsubs.push(S.store.onVehicles(S.uid, (list) => {
     S.myVehicles = list;
     syncActiveCar();
@@ -245,10 +247,12 @@ async function enterApp() {
   }));
   startGps();
   S.speedMode = lsGet("speedMode", "speed");
+  S.period = lsGet("speedPeriod", "week");
   setView(lsGet("view", "map"));
   handleDeepLink();
   refreshPush();
   loadDrive();
+  tryClaim();
   if (S.justJoined) {
     S.justJoined = false;
     const car = (await S.store.getVehicles(S.uid).catch(() => []))[0];
@@ -484,8 +488,7 @@ function renderMembers() {
     const car = st !== "seen" && m.car?.name ? ` <small>· ${esc(m.car.name)}</small>` : "";
     const ago = st === "seen" ? ` <small>· ${esc(fmtAgo(m.updatedAt))}</small>` : "";
     const liveTag = isLiveRun(m) ? `<span class="mk-live">LIVE</span>` : "";
-    const crown = carOfMonthWinners().has(m.id) ? `<span class="mk-crown" title="Car of the Month">👑</span>` : "";
-    const html = `<div class="mk ${st === "stale" ? "stale" : st === "seen" ? "seen" : ""}${watchId === m.id ? " watched" : ""}">${crown}<div class="mk-pin" style="background:${colorFor(m.id)}"><span>${esc(initial(m.callsign))}</span></div><div class="mk-label">${liveTag}${esc(m.callsign)}${car}${speed}${ago}</div></div>`;
+    const html = `<div class="mk ${st === "stale" ? "stale" : st === "seen" ? "seen" : ""}${watchId === m.id ? " watched" : ""}"><div class="mk-pin" style="background:${colorFor(m.id)}"><span>${esc(initial(m.callsign))}</span></div><div class="mk-label">${liveTag}${esc(m.callsign)}${car}${speed}${ago}</div></div>`;
     let mk = S.markers.get(m.id);
     const icon = L.divIcon({ className: "", html, iconSize: [0, 0] });
     if (!mk) {
@@ -1314,7 +1317,6 @@ function carCard(v, onclick, owner = S.uid) {
       h("button", { class: "btn ghost sm log-btn", onclick: (e) => { e.stopPropagation(); openLog(v, owner, owner === S.uid); } }, `Mod log${v.log?.length ? ` (${v.log.length})` : ""}`)));
 }
 function renderGarage() {
-  renderCotm();
   const list = $("#garage-list");
   list.replaceChildren();
   if (!S.myVehicles.length) {
@@ -1526,6 +1528,14 @@ const BOARDS = {
     badInput: "Enter the top speed in km/h, e.g. 212",
     read: () => ({ method: $("#in-speed-method").value }),
   },
+  t60: {
+    coll: "launch", field: "t60", unit: "s", dec: 2, asc: true, manual: false,
+    classes: ["Drag strip", "Track", "Airfield", "Road"], best: "Quickest", noun: "0–60 run",
+    line: (b) => [b.car, b.t100 ? `0–100 ${b.t100.toFixed(2)} s` : "", b.venue],
+    sub: (b) => [b.car, b.venue],
+    extra: () => "",
+    empty: "Arm the launch timer above, come to a dead stop and launch. Your 0–60 time lands here automatically.",
+  },
   t100: {
     coll: "launch", field: "t100", unit: "s", dec: 2, asc: true, manual: false,
     classes: ["Drag strip", "Track", "Airfield", "Road"], best: "Quickest", noun: "0–100 run",
@@ -1543,15 +1553,18 @@ const BOARDS = {
     empty: "Arm the launch timer and run the full 402 m. Your time and trap speed land here automatically.",
   },
 };
-const BOARD_TITLE = { bass: "Bass", speed: "Top speed", t100: "0–100 km/h", qm: "Quarter mile" };
+const BOARD_TITLE = { bass: "Bass", speed: "Top speed", t60: "0–60 km/h", t100: "0–100 km/h", qm: "Quarter mile" };
 const boardName = (uid) => (uid === S.uid ? `${S.profile.callsign} (you)` : S.members.get(uid)?.callsign || "Ex-member");
 const valText = (cfg, n, cls = "dbv") => h("span", { class: cls }, Number(n).toFixed(cfg.dec), h("small", {}, cfg.unit));
 const MEDALS = ["gold", "silver", "bronze"];
 
 function renderBoard(key) {
   const cfg = BOARDS[key], cur = S.boardClass[key];
-  const runs = (S.boards[key] || []).filter((b) => b[cfg.field] != null && (cur === "All" || b.cls === cur));
+  const weekly = key !== "bass" && S.period === "week";
+  const ws = weekStart();
+  const runs = (S.boards[key] || []).filter((b) => b[cfg.field] != null && (cur === "All" || b.cls === cur) && (!weekly || b.createdAt >= ws));
   const better = (x, y) => (cfg.asc ? x < y : x > y);
+  if (key !== "bass") renderPeriod(key, cur);
   $(`#${key}-classes`).replaceChildren(...["All", ...cfg.classes].map((c) => h("button", { "aria-pressed": String(cur === c), onclick: () => { S.boardClass[key] = c; renderBoard(key); } }, c)));
 
   // each person's best
@@ -1562,7 +1575,8 @@ function renderBoard(key) {
   // podium: 2nd · 1st · 3rd
   const podium = $(`#${key}-podium`);
   if (!board.length) {
-    podium.replaceChildren(h("div", { class: "empty" }, h("div", { class: "big" }, `No ${cfg.noun}s yet`), h("p", {}, cur === "All" ? cfg.empty : `Nobody has logged a ${cur} ${cfg.noun} yet.`)));
+    podium.replaceChildren(h("div", { class: "empty" }, h("div", { class: "big" }, weekly ? `No ${cfg.noun}s this week` : `No ${cfg.noun}s yet`),
+      h("p", {}, weekly ? `The weekly board resets every Monday at midnight. Get the first ${cfg.noun} in and own the week.` : cur === "All" ? cfg.empty : `Nobody has logged a ${cur} ${cfg.noun} yet.`)));
   } else {
     const spot = (b, i) => b ? h("div", { class: `pod p${i + 1}` },
       h("div", { class: `medal ${MEDALS[i]}`, "aria-label": `${["1st", "2nd", "3rd"][i]} place` }, String(i + 1)),
@@ -1656,6 +1670,23 @@ for (const key of Object.keys(BOARDS)) {
       toast(claimRecord(key, val, $(`#in-${key}-car`).value.trim()) ? `${txt}. That's the new crew record!` : `${txt} logged`);
     } catch { toast("Couldn't save. The photo might be too big; try another one."); }
   });
+}
+
+/* ---------------- weekly speed boards ---------------- */
+// Speed boards default to this week (Monday 00:00 to Sunday night) so everyone gets a fresh shot every week.
+function weekStart(off = 0) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + off * 7); return d.getTime(); }
+function renderPeriod(key, cls) {
+  const box = $("#speed-period");
+  if (!box) return;
+  const cfg = BOARDS[key];
+  const prev = (S.boards[key] || []).filter((b) => b[cfg.field] != null && (cls === "All" || b.cls === cls) && b.createdAt >= weekStart(-1) && b.createdAt < weekStart());
+  const champ = prev.length ? prev.reduce((a, b) => ((cfg.asc ? b[cfg.field] < a[cfg.field] : b[cfg.field] > a[cfg.field]) ? b : a)) : null;
+  const left = Math.ceil((weekStart(1) - Date.now()) / 86400000);
+  fill(box,
+    h("div", { class: "chips" }, ...[["week", "This week"], ["all", "All time"]].map(([p, label]) => h("button", { "aria-pressed": String(S.period === p), onclick: () => { S.period = p; lsSet("speedPeriod", p); renderBoard(key); } }, label))),
+    S.period === "week" ? h("div", { class: "week-line" },
+      h("span", {}, `Resets ${left <= 1 ? "tonight at midnight" : `Monday 00:00 · ${left} days left`}`),
+      champ ? h("span", {}, "Last week: ", h("b", {}, `🏆 ${boardName(champ.uid)} ${Number(champ[cfg.field]).toFixed(cfg.dec)} ${cfg.unit}`)) : null) : null);
 }
 
 /* ---------------- watch a live speed run ---------------- */
@@ -2057,8 +2088,8 @@ const BADGES = [
   { id: "mods5", icon: "🔧", name: "Gearhead", desc: "Log 5 mods in your mod log", stat: "mods", goal: 5 },
   { id: "launch", icon: "🚀", name: "Launch Control", desc: "Record a 0–100 run", stat: "launches", goal: 1 },
   { id: "record", icon: "🏆", name: "Record Holder", desc: "Hold #1 on any crew board right now", live: holdsRecord },
-  { id: "cotm", icon: "👑", name: "Car of the Month", desc: "Win the crew's monthly car vote", live: (uid) => carOfMonthWinners().has(uid) },
-  { id: "founder", icon: "⭐", name: "Founder", desc: "Started this crew", live: (uid) => S.crew?.ownerId === uid },
+  { id: "appfounder", icon: "🛠️", name: "App Founder", desc: "Built THE CREW app", live: (uid) => S.crew?.ownerId === uid },
+  { id: "founder", icon: "⭐", name: "Crew Founder", desc: "One of the founders of this crew", live: (uid) => isFounder(uid) },
 ];
 const badgeEarned = (b, uid) => (b.live ? !!b.live(uid) : (statsFor(uid)[b.stat] || 0) >= b.goal);
 function checkBadges(silent) {
@@ -2086,48 +2117,70 @@ function renderBadges() {
     !got && !b.live ? h("div", { class: "bar" }, h("i", { style: `width:${Math.round((have / b.goal) * 100)}%` })) : null)));
 }
 
-/* ---------------- car of the month ---------------- */
-const monthKey = (off = 0) => { const t = new Date(); t.setDate(1); t.setMonth(t.getMonth() + off); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}`; };
-const monthName = (off = 0) => { const t = new Date(); t.setDate(1); t.setMonth(t.getMonth() + off); return ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][t.getMonth()]; };
-let votes = [];
-function tally(month) {
-  const c = new Map();
-  for (const v of votes) if (v.month === month && v.for && v.for !== v.voter) c.set(v.for, (c.get(v.for) || 0) + 1);
-  return c;
-}
-function carOfMonthWinners() {
-  const t = tally(monthKey(-1));
-  const top = Math.max(0, ...t.values());
-  return new Set(top ? [...t].filter(([, n]) => n === top).map(([id]) => id) : []);
-}
-function renderCotm() {
-  const box = $("#cotm");
+/* ---------------- crew founders ---------------- */
+// The app founder (whoever set the crew up) sends one-use links; opening one claims a founder spot.
+let founders = [], founderClaims = [];
+const MAX_FOUNDERS = 2;
+const isFounder = (uid) => founders.some((f) => f.id === uid);
+const roleTag = (uid) => (S.crew?.ownerId === uid ? "App founder" : isFounder(uid) ? "Founder" : "");
+const claimLink = (token) => `${location.origin}${location.pathname}?claim=${token}&crew=${S.crew.id}`;
+function renderFounders() {
+  const box = $("#founders");
   if (!box || !S.crew) return;
-  const counts = tally(monthKey(0));
-  const mine = votes.find((v) => v.month === monthKey(0) && v.voter === S.uid)?.for;
-  const winners = [...carOfMonthWinners()];
-  const last = tally(monthKey(-1));
-  const cars = [...S.members.values()].filter((m) => m.car?.name).sort((a, b) => (counts.get(b.id) || 0) - (counts.get(a.id) || 0) || a.callsign.localeCompare(b.callsign));
-  const daysLeft = (() => { const t = new Date(); return new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate() - t.getDate(); })();
-  fill(box, 
-    h("h3", { class: "h3" }, `👑 Car of the Month · ${monthName(0)}`),
-    winners.length ? h("div", { class: "cotm-win" }, h("span", { class: "cotm-crown" }, "👑"),
-      h("div", { class: "grow" }, h("div", { class: "lbl" }, `${monthName(-1)} winner${winners.length > 1 ? "s" : ""}`),
-        h("div", { class: "n" }, winners.map((id) => `${S.members.get(id)?.callsign || "Ex-member"}${S.members.get(id)?.car?.name ? ` · ${S.members.get(id).car.name}` : ""}`).join(" & ")),
-        h("div", { class: "s" }, `${last.get(winners[0])} vote${last.get(winners[0]) === 1 ? "" : "s"} · wears the crown on the map all ${monthName(0)}`))) : null,
-    h("p", { class: "fine", style: "margin:6px 0 10px" }, `Vote for the best car in the crew. One vote each, you can change it any time. Voting closes ${daysLeft === 0 ? "tonight" : `in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`}.`),
-    cars.length ? h("ul", { class: "cotm-list" }, ...cars.map((m) => {
-      const n = counts.get(m.id) || 0, me = m.id === S.uid, picked = mine === m.id;
-      return h("li", {},
-        avatar(m.id, m.callsign),
-        h("div", { class: "grow", onclick: () => openMember(m.id), style: "cursor:pointer" }, h("div", { class: "n" }, m.car.name, carOfMonthWinners().has(m.id) ? " 👑" : ""), h("div", { class: "s" }, [me ? "You" : m.callsign, m.car.desc].filter(Boolean).join(" · "))),
-        h("div", { class: "num" }, h("span", { class: "dbv" }, String(n), h("small", {}, n === 1 ? "vote" : "votes"))),
-        me ? h("span", { class: "status" }, "Yours") : h("button", { class: `btn ${picked ? "primary" : "ghost"} sm`, "aria-pressed": String(picked), onclick: async () => {
-          if (picked) return;
-          await S.store.castVote(S.crew.id, monthKey(0), S.uid, m.id);
-          toast(`Voted for ${m.callsign}'s ${m.car.name}`);
-        } }, picked ? "Voted ✓" : "Vote"));
-    })) : h("div", { class: "empty" }, h("p", {}, "Cars show up here once people add them to their garage.")));
+  const owner = S.crew.ownerId === S.uid;
+  const open = founderClaims.length, left = MAX_FOUNDERS - founders.length - open;
+  const share = async (token) => {
+    const text = `You're one of the founders of ${S.crew.name} 🏁 Tap this link to claim your founder spot on THE CREW: ${claimLink(token)}`;
+    try {
+      if (navigator.share) await navigator.share({ title: "Claim your founder spot", text });
+      else { await navigator.clipboard.writeText(text); toast("Link copied"); }
+    } catch (e) { if (e?.name !== "AbortError") { try { await navigator.clipboard.writeText(claimLink(token)); toast("Link copied"); } catch { toast(claimLink(token)); } } }
+  };
+  fill(box,
+    founders.length ? h("ul", { class: "rows" }, ...founders.map((f) => h("li", {},
+      avatar(f.id, S.members.get(f.id)?.callsign),
+      h("div", { class: "grow" }, h("div", { class: "n" }, "⭐ ", S.members.get(f.id)?.callsign || "Ex-member", f.id === S.uid ? " (you)" : ""), h("div", { class: "s" }, `Crew founder since ${fmtDate(new Date(f.at).toISOString().slice(0, 10))}`)),
+      owner ? h("button", { class: "btn ghost sm", onclick: async (e) => {
+        const b = e.currentTarget;
+        if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Tap again"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Remove"; }, 3000); return; }
+        await S.store.removeFounder(S.crew.id, f.id); toast("Founder removed");
+      } }, "Remove") : null))) : h("p", { class: "fine", style: "font-size:14px" }, owner ? "Nobody has claimed a founder spot yet." : "The crew founders haven't claimed their spots yet."),
+    owner && open ? h("div", { class: "stack", style: "margin-top:10px" }, h("div", { class: "lbl" }, "Links waiting to be claimed"),
+      ...founderClaims.map((c) => h("div", { class: "claim-row" },
+        h("div", { class: "grow" }, h("div", { class: "n", style: "font-size:14px" }, c.note || "Founder link"), h("div", { class: "s" }, `Made ${fmtAgo(c.createdAt)} · works once`)),
+        h("button", { class: "btn primary sm", onclick: () => share(c.id) }, "Send"),
+        h("button", { class: "btn ghost sm", onclick: async () => { await S.store.deleteFounderClaim(S.crew.id, c.id); toast("Link cancelled"); } }, "Cancel")))) : null,
+    owner && left > 0 ? h("form", { class: "stack", style: "margin-top:12px", onsubmit: async (e) => {
+      e.preventDefault();
+      const note = e.target.elements.who.value.trim();
+      const token = Array.from(crypto.getRandomValues(new Uint8Array(15)), (x) => "abcdefghjkmnpqrstuvwxyz23456789"[x % 31]).join("");
+      await S.store.createFounderClaim(S.crew.id, token, { createdAt: Date.now(), note: note ? `For ${note}` : "" });
+      e.target.reset();
+      share(token);
+    } },
+      h("label", { class: "lbl", for: "in-founder-who" }, `Send a founder link (${left} left)`),
+      h("div", { class: "row-end", style: "margin:0" }, h("input", { id: "in-founder-who", name: "who", maxlength: "20", placeholder: "Who it's for, e.g. Ruan" }), h("button", { class: "btn primary sm", type: "submit", style: "flex:none" }, "Make link"))) : null,
+    owner ? h("p", { class: "fine", style: "margin-top:8px" }, "Each link works once. Whoever opens it (and is in the crew) gets the ⭐ Crew Founder badge.") : null);
+}
+// Opened a founder link: remember it, then claim once inside the right crew.
+function notePendingClaim() {
+  try {
+    const u = new URL(location.href), t = u.searchParams.get("claim"), c = u.searchParams.get("crew");
+    if (t && c) { lsSet("pendingClaim", { token: t, crew: c.toUpperCase() }); history.replaceState(null, "", location.pathname); }
+  } catch {}
+}
+notePendingClaim();
+async function tryClaim() {
+  const p = lsGet("pendingClaim", null);
+  if (!p || !S.crew) return;
+  if (p.crew !== S.crew.id) { toast(`That founder link is for crew ${p.crew}. Join that crew first.`); return; }
+  lsSet("pendingClaim", null);
+  if (isFounder(S.uid)) { toast("You're already a founder of this crew ⭐"); return; }
+  try {
+    await S.store.claimFounder(S.crew.id, p.token, S.uid);
+    toast(`⭐ You're now a founder of ${S.crew.name}!`);
+    notifyCrew("join", { title: `⭐ ${S.profile.callsign} claimed a founder spot`, body: `${S.crew.name} has a new crew founder`, url: `./?member=${S.uid}`, tag: `founder-${S.uid}` });
+  } catch { toast("That founder link has already been used or cancelled. Ask for a new one."); }
 }
 
 /* ---------------- crew chat ---------------- */
@@ -2221,14 +2274,14 @@ $("#form-chat").addEventListener("submit", async (e) => {
 /* ---------------- launch timer: 0–100 km/h and quarter mile ---------------- */
 // Uses GPS speed. The exact start is worked out from the first two moving readings,
 // and the 100 km/h and 402 m marks are found between readings, so 1-second GPS still gives good times.
-const V100 = 100 / 3.6, QM = 402.336;
+const V60 = 60 / 3.6, V100 = 100 / 3.6, QM = 402.336;
 let launch = null; // {state, cls, venue, car, ...}
 function setSpeedMode(mode, skipSave) {
-  if (!["speed", "t100", "qm"].includes(mode)) mode = "speed";
+  if (!["speed", "t60", "t100", "qm"].includes(mode)) mode = "speed";
   S.speedMode = mode;
   if (!skipSave) lsSet("speedMode", mode);
   document.querySelectorAll("#view-speed .seg3 button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.mode === mode)));
-  for (const k of ["speed", "t100", "qm"]) $(`#pane-${k}`).hidden = k !== mode;
+  for (const k of ["speed", "t60", "t100", "qm"]) $(`#pane-${k}`).hidden = k !== mode;
   $("#btn-addspeed").hidden = mode !== "speed";
   renderBoard(mode);
   renderSession();
@@ -2261,7 +2314,7 @@ function launchFeed(fix, v, derivedDt) {
     L.stillSince = null;
     if (L.state === "armed") return; // rolling: wait for a full stop
     if (v < 1.0) return;
-    Object.assign(L, { state: "running", first: { t, v }, prev: { t, v }, dist: 0, top: v, t100: null, qm: null, trap: null, tStart: null });
+    Object.assign(L, { state: "running", first: { t, v }, prev: { t, v }, dist: 0, top: v, t60: null, t100: null, qm: null, trap: null, tStart: null });
     renderLaunch();
     return;
   }
@@ -2281,6 +2334,7 @@ function launchFeed(fix, v, derivedDt) {
   }
   const d0 = L.dist;
   L.dist += ((p.v + v) / 2) * dt;
+  if (L.t60 == null && p.v < V60 && v >= V60) L.t60 = (p.t + ((V60 - p.v) / (v - p.v)) * (t - p.t) - L.tStart) / 1000;
   if (L.t100 == null && p.v < V100 && v >= V100) L.t100 = (p.t + ((V100 - p.v) / (v - p.v)) * (t - p.t) - L.tStart) / 1000;
   if (L.qm == null && d0 < QM && L.dist >= QM) {
     const f = (QM - d0) / (L.dist - d0);
@@ -2291,22 +2345,23 @@ function launchFeed(fix, v, derivedDt) {
   L.prev = { t, v };
   L.now = v;
   if (L.qm != null) return finishLaunch();
-  if (v < L.top - 4) return finishLaunch(L.t100 == null ? "You lifted before 100 km/h." : null);
+  if (v < L.top - 4) return finishLaunch(L.t60 == null ? "You lifted before 60 km/h." : L.t100 == null ? "You lifted before 100 km/h." : null);
   if ((t - L.tStart) / 1000 > 40) return finishLaunch("Run took longer than 40 s.");
   renderLaunch();
 }
 async function finishLaunch(why) {
   const L = launch;
+  const t60 = L.t60 != null && L.t60 > 1 && L.t60 < 20 ? Math.round(L.t60 * 100) / 100 : null;
   const t100 = L.t100 != null && L.t100 > 1.8 && L.t100 < 30 ? Math.round(L.t100 * 100) / 100 : null;
   const qm = L.qm != null && L.qm > 7 && L.qm < 35 ? Math.round(L.qm * 100) / 100 : null;
-  launch = { ...L, state: "done", result: { t100, qm, trap: qm ? L.trap : null, why } };
+  launch = { ...L, state: "done", result: { t60, t100, qm, trap: qm ? L.trap : null, why } };
   updateWakeLock();
   renderLaunch();
-  if (t100 == null && qm == null) return;
+  if (t60 == null && t100 == null && qm == null) return;
   bumpStat("launches");
   try {
-    await S.store.addBoard(S.crew.id, "launch", { uid: S.uid, t100, qm, trap: qm ? L.trap : null, cls: L.cls, car: L.car, venue: L.venue, method: "GPS (auto)", photo: "", witnesses: [], createdAt: Date.now() });
-    const rec = [t100 != null && claimRecord("t100", t100, L.car), qm != null && claimRecord("qm", qm, L.car)].some(Boolean);
+    await S.store.addBoard(S.crew.id, "launch", { uid: S.uid, t60, t100, qm, trap: qm ? L.trap : null, cls: L.cls, car: L.car, venue: L.venue, method: "GPS (auto)", photo: "", witnesses: [], createdAt: Date.now() });
+    const rec = [t60 != null && claimRecord("t60", t60, L.car), t100 != null && claimRecord("t100", t100, L.car), qm != null && claimRecord("qm", qm, L.car)].some(Boolean);
     toast(rec ? "That's a new crew record! 🏆" : "Run saved to the board");
   } catch { toast("Couldn't save the run. Check your signal."); }
 }
@@ -2319,7 +2374,7 @@ function renderLaunch() {
     box.className = "session";
     fill(box, 
       h("div", {}, h("div", { class: "car-name" }, "Launch timer"),
-        h("div", { class: "s", style: "color:var(--muted);margin-top:4px" }, "Times 0–100 km/h and the ¼ mile (402 m) from GPS. Arm it, come to a dead stop, then launch. Only on a track, drag strip or closed road.")),
+        h("div", { class: "s", style: "color:var(--muted);margin-top:4px" }, "Times 0–60, 0–100 km/h and the ¼ mile (402 m) from GPS. Arm it, come to a dead stop, then launch. Only on a track, drag strip or closed road.")),
       h("div", { class: "grid2" },
         h("div", {}, h("label", { class: "lbl", for: "in-launch-class" }, "Where"),
           h("select", { id: "in-launch-class" }, ...BOARDS.t100.classes.map((c) => h("option", c === prefs.cls ? { selected: true } : {}, c)))),
@@ -2332,8 +2387,9 @@ function renderLaunch() {
     const r = L.result;
     box.className = "session";
     fill(box, 
-      h("div", { class: "car-name" }, r.t100 || r.qm ? "Run complete" : "No time recorded"),
-      r.t100 || r.qm ? h("div", { class: "launch-res" },
+      h("div", { class: "car-name" }, r.t60 || r.t100 || r.qm ? "Run complete" : "No time recorded"),
+      r.t60 || r.t100 || r.qm ? h("div", { class: "launch-res four" },
+        h("div", {}, h("b", {}, r.t60 ? r.t60.toFixed(2) : "–"), h("span", {}, "0–60 s")),
         h("div", {}, h("b", {}, r.t100 ? r.t100.toFixed(2) : "–"), h("span", {}, "0–100 s")),
         h("div", {}, h("b", {}, r.qm ? r.qm.toFixed(2) : "–"), h("span", {}, "¼ mile s")),
         h("div", {}, h("b", {}, r.trap ? String(r.trap) : "–"), h("span", {}, "trap km/h"))) : null,
@@ -2351,6 +2407,7 @@ function renderLaunch() {
       h("div", { class: "now" }, String(Math.round((running ? L.now || 0 : (S.pos?.speed || 0)) * 3.6)), h("small", {}, "km/h")),
       h("div", { class: "meta" },
         h("div", {}, h("b", {}, el), "seconds"),
+        h("div", {}, h("b", {}, L.t60 != null ? L.t60.toFixed(2) : "–"), "0–60"),
         h("div", {}, h("b", {}, L.t100 != null ? L.t100.toFixed(2) : "–"), "0–100"),
         h("div", {}, h("b", {}, running ? `${Math.round(L.dist || 0)}` : "0"), "metres"))),
     h("button", { class: "btn danger wide", onclick: cancelLaunch }, "Cancel"));
@@ -2616,6 +2673,7 @@ async function syncReminders() {
 
 /* ---------------- crew ---------------- */
 function renderCrew() {
+  renderFounders();
   renderHome();
   renderPush();
   const ul = $("#crew-list");
@@ -2624,9 +2682,9 @@ function renderCrew() {
     const st = m.id === S.uid ? (S.ghost ? "ghost" : S.pos ? "live" : "off") : memberState(m);
     const label = { live: "Live", stale: m.updatedAt ? fmtAgo(m.updatedAt) : "Away", seen: fmtAgo(m.updatedAt), ghost: "Ghost", off: m.updatedAt ? fmtAgo(m.updatedAt) : "Offline" }[st];
     const dist = m.id !== S.uid && S.pos && ["live", "stale"].includes(st) ? fmtKm(haversine(S.pos, m)) + " away" : "";
-    const crown = carOfMonthWinners().has(m.id) ? " 👑" : "";
+    const role = roleTag(m.id);
     return h("li", { onclick: () => openMember(m.id) }, avatar(m.id, m.callsign),
-      h("div", { class: "grow" }, h("div", { class: "n" }, m.id === S.uid ? `${m.callsign} (you)` : m.callsign, crown),
+      h("div", { class: "grow" }, h("div", { class: "n" }, m.id === S.uid ? `${m.callsign} (you)` : m.callsign, role ? h("span", { class: "cls" }, role) : null),
         h("div", { class: "s" }, [m.car?.name, dist].filter(Boolean).join(" · ") || "No car added")),
       h("span", { class: `status ${st === "live" ? "live" : st === "ghost" ? "ghost" : ""}` }, label));
   }));

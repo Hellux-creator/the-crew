@@ -393,14 +393,17 @@ select{font:inherit;color:var(--fg);background:var(--panel-2);border:1px solid v
 .route-mini{width:64px;height:48px;flex:none;background:#0b0f15;border-radius:8px}
 .recap-img{display:block;width:100%;aspect-ratio:4/5;border-radius:12px;background:#0b0f15;object-fit:cover}
 
-/* ---------- car of the month ---------- */
-.cotm-win{display:flex;align-items:center;gap:12px;background:radial-gradient(120% 140% at 0% 0%,#3a2604 0%,var(--panel) 60%);border:1px solid #7a5a12;border-radius:var(--r);padding:12px 14px;margin-bottom:6px}
-.cotm-crown{font-size:34px}
-.cotm-win .n{font:800 22px/1.1 var(--f-display);text-transform:uppercase;letter-spacing:.03em;margin-top:4px}
-.cotm-win .s{color:var(--muted);font-size:13px}
-.cotm-list{list-style:none;margin:0;padding:0}
-.cotm-list li{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
-.cotm-list .num{min-width:52px}
+/* ---------- founders ---------- */
+.claim-row{display:flex;align-items:center;gap:8px;background:var(--panel-2);border:1px solid var(--line);border-radius:12px;padding:8px 10px}
+
+/* ---------- weekly boards, 0–60 ---------- */
+.seg.seg4{grid-template-columns:1.3fr 1fr 1fr 1fr}
+.seg.seg4 button{padding:9px 4px;font-size:14px}
+.speed-period{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+.week-line{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;font-size:13px;color:var(--muted)}
+.week-line b{color:var(--accent);font-weight:600}
+.launch-res.four{grid-template-columns:repeat(4,1fr)}
+.launch-res.four b{font-size:28px}
 .topbar{gap:10px}
 .crewname{min-width:0;flex:1;font-size:20px}
 #crew-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
