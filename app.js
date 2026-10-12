@@ -2109,12 +2109,35 @@ function renderBadges() {
     const have = b.live ? null : Math.min(statsFor(S.uid)[b.stat] || 0, b.goal);
     return { b, got, have };
   }).sort((x, y) => (y.got ? 1 : 0) - (x.got ? 1 : 0));
-  fill(box, ...items.map(({ b, got, have }) => h("div", { class: `bdg${got ? " got" : ""}`, title: b.desc },
+  fill(box, ...items.map(({ b, got, have }) => h("button", { class: `bdg${got ? " got" : ""}`, title: b.desc, onclick: () => openBadge(b) },
     h("div", { class: "bdg-i" }, b.icon),
     h("div", { class: "bdg-n" }, b.name),
+    (() => { const n = badgeHolders(b).length; return h("div", { class: "bdg-who" }, n ? `${n} in the crew ${n === 1 ? "has" : "have"} it` : "Nobody yet"); })(),
     h("div", { class: "bdg-d" }, got ? b.desc : b.live ? b.desc : `${Math.floor(have).toLocaleString("en-ZA")} / ${b.goal.toLocaleString("en-ZA")}`),
     !got && !b.live ? h("div", { class: "bar" }, h("i", { style: `width:${Math.round((have / b.goal) * 100)}%` })) : null)));
 }
+
+// Who in the crew has a badge, and how close everyone else is.
+const badgeHolders = (b) => [...S.members.values()].filter((m) => badgeEarned(b, m.id));
+function openBadge(b) {
+  const all = [...S.members.values()];
+  const have = all.filter((m) => badgeEarned(b, m.id));
+  const rest = b.live ? [] : all.filter((m) => !badgeEarned(b, m.id)).map((m) => ({ m, v: statsFor(m.id)[b.stat] || 0 })).sort((x, y) => y.v - x.v);
+  const name = (m) => (m.id === S.uid ? `${m.callsign} (you)` : m.callsign);
+  fill($("#member-body"),
+    h("div", { class: "badge-head" }, h("div", { class: "bdg-big" }, b.icon),
+      h("div", { class: "grow" }, h("div", { class: "car-name" }, b.name), h("div", { class: "s", style: "color:var(--muted)" }, b.desc))),
+    h("div", { class: "lbl", style: "margin:14px 0 6px" }, `Unlocked · ${have.length}`),
+    have.length ? h("ul", { class: "rows" }, ...have.map((m) => h("li", { onclick: () => openMember(m.id), style: "cursor:pointer" }, avatar(m.id, m.callsign),
+      h("div", { class: "grow" }, h("div", { class: "n" }, name(m)), b.stat ? h("div", { class: "s" }, `${Math.floor(statsFor(m.id)[b.stat] || 0).toLocaleString("en-ZA")} ${STAT_UNIT[b.stat] || ""}`) : null),
+      h("span", { class: "status live" }, b.icon)))) : h("p", { class: "fine", style: "font-size:14px" }, "Nobody in the crew has this one yet. Be the first."),
+    rest.length ? h("div", { class: "lbl", style: "margin:16px 0 6px" }, "Still chasing it") : null,
+    rest.length ? h("ul", { class: "rows" }, ...rest.map(({ m, v }) => h("li", { onclick: () => openMember(m.id), style: "cursor:pointer" }, avatar(m.id, m.callsign),
+      h("div", { class: "grow" }, h("div", { class: "n" }, name(m)), h("div", { class: "bar" }, h("i", { style: `width:${Math.min(100, Math.round((v / b.goal) * 100))}%` }))),
+      h("div", { class: "num" }, `${Math.floor(Math.min(v, b.goal)).toLocaleString("en-ZA")} / ${b.goal.toLocaleString("en-ZA")}`)))) : null);
+  dlgMember.showModal();
+}
+const STAT_UNIT = { km: "km driven", cells: "road tiles", drives: "drives", night: "night drives", meets: "meets", convoys: "convoys led", mods: "mods", launches: "launch runs" };
 
 /* ---------------- crew founders ---------------- */
 // The app founder (whoever set the crew up) sends one-use links; opening one claims a founder spot.
