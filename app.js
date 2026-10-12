@@ -5,12 +5,12 @@ import { haversine, ghEncode, ghBounds, cellAreaKm2, fmtKm, fmtAgo, CELL_PREC, P
 const $ = (s) => document.querySelector(s);
 const DEMO = !firebaseConfig.apiKey || firebaseConfig.apiKey.startsWith("PASTE");
 const COLORS = ["#ffb020", "#3ddc97", "#5cc8ff", "#ff6b9a", "#c58bff", "#ff8a3d", "#9be15d", "#ffd84d"];
-const STALE_MS = 5 * 60 * 1000, GONE_MS = 2 * 60 * 60 * 1000;
+const STALE_MS = 5 * 60 * 1000, GONE_MS = 2 * 60 * 60 * 1000, SEEN_MS = 24 * 60 * 60 * 1000;
 
 const S = {
   store: null, uid: null, profile: null, crew: null,
   members: new Map(), convoys: [], myVehicles: [],
-  boards: { bass: [], speed: [] }, boardClass: { bass: "All", speed: "All" },
+  boards: { bass: [], speed: [], t60: [], t100: [], qm: [] }, boardClass: { bass: "All", speed: "All", t60: "All", t100: "All", qm: "All" }, speedMode: "speed", period: "week",
   explored: new Set(), pendingCells: new Set(),
   pos: null, lastFix: null, lastSent: null, km: 0,
   ghost: false, fog: false, mapTheme: "night", meets: [], seg: "meets", homeHidden: false, view: "map", pick: false, pendingDest: null,
@@ -44,7 +44,8 @@ function memberState(m) {
   if (m.ghost) return "ghost";
   if (m.lat == null || !m.updatedAt) return "off";
   const age = Date.now() - m.updatedAt;
-  if (age > GONE_MS) return "off";
+  if (age > SEEN_MS) return "off";
+  if (age > GONE_MS) return "seen"; // faded "last seen" pin
   return age > STALE_MS ? "stale" : "live";
 }
 
@@ -120,6 +121,8 @@ function showOnboard(step) {
   $("#ob-crew").hidden = step !== "crew";
   $("#ob-error").hidden = true;
   if (step === "callsign") $("#in-callsign").focus();
+  const pc = lsGet("pendingClaim", null);
+  if (step === "crew" && pc?.crew && !$("#in-code").value) $("#in-code").value = pc.crew;
 }
 function obError(msg) { const e = $("#ob-error"); e.textContent = msg; e.hidden = false; }
 
@@ -147,6 +150,7 @@ $("#form-join").addEventListener("submit", async (e) => {
   if (!crew) return obError(`No crew found for ${code}. Check the code with whoever invited you.`);
   await S.store.saveProfile(S.uid, { crewId: code });
   S.profile.crewId = code;
+  S.justJoined = true;
   route();
 });
 $("#form-create").addEventListener("submit", async (e) => {
@@ -170,6 +174,8 @@ function teardown() {
 
 async function enterApp() {
   teardown();
+  S.statsMerged = false; S.meetsLoaded = false;
+  chatMsgs = []; chatFirst = true; founders = []; founderClaims = [];
   $("#onboard").hidden = true;
   $("#app").hidden = false;
   $("#demo-banner").hidden = !DEMO;
@@ -198,12 +204,15 @@ async function enterApp() {
       return;
     }
     noteRuns(list);
+    if (!S.statsMerged) { S.statsMerged = true; mergeStats(S.members.get(S.uid)?.stats); }
     setTimeout(applyDeepLink, 0);
     renderMembers(); renderConvoyOverlay(); renderLiveStrip(); followWatched(); renderActiveView();
     if (!S.didFit && !S.pos) { S.didFit = true; fitCrew(); }
   }, () => toast("Lost connection to the crew. Retrying…")));
   S.unsubs.push(S.store.onMeets(S.crew.id, (list) => {
     S.meets = list.sort((a, b) => a.when - b.when);
+    S.meetsLoaded = true;
+    syncReminders();
     setTimeout(applyDeepLink, 0);
     renderMeetPins();
     if (S.view === "convoy") renderDrive();
@@ -215,19 +224,40 @@ async function enterApp() {
   S.explored = await S.store.loadExplored(S.uid).catch(() => new Set());
   for (const c of lsGet(`pendingCells:${S.uid}`, [])) { S.explored.add(c); S.pendingCells.add(c); } // from a drive that didn't finish saving
   if (S.fog) S.fogLayer.redraw();
-  for (const key of Object.keys(BOARDS)) S.unsubs.push(S.store.onBoard(S.crew.id, BOARDS[key].coll, (list) => {
-    S.boards[key] = list;
-    if (S.view === key) renderBoard(key);
+  for (const coll of new Set(Object.values(BOARDS).map((c) => c.coll))) S.unsubs.push(S.store.onBoard(S.crew.id, coll, (list) => {
+    for (const [key, cfg] of Object.entries(BOARDS)) {
+      if (cfg.coll !== coll) continue;
+      S.boards[key] = list;
+      if (S.view === key || (S.view === "speed" && S.speedMode === key)) renderBoard(key);
+    }
+    if (S.view === "explore") renderBadges();
   }));
+  S.unsubs.push(S.store.onChat(S.crew.id, onChatList, () => {}));
+  S.unsubs.push(S.store.onFounders(S.crew.id, (list) => {
+    founders = list;
+    if (S.view === "crew") renderCrew();
+    if (S.view === "explore") renderBadges();
+  }, () => {}));
+  if (S.crew.ownerId === S.uid) S.unsubs.push(S.store.onFounderClaims(S.crew.id, (list) => { founderClaims = list; if (S.view === "crew") renderFounders(); }, () => {}));
   S.unsubs.push(S.store.onVehicles(S.uid, (list) => {
     S.myVehicles = list;
     syncActiveCar();
+    setStat("mods", list.reduce((n, v) => n + (v.log || []).filter((e) => e.type === "Mod").length, 0));
     if (S.view === "garage") renderGarage();
   }));
   startGps();
+  S.speedMode = lsGet("speedMode", "speed");
+  S.period = lsGet("speedPeriod", "week");
   setView(lsGet("view", "map"));
   handleDeepLink();
   refreshPush();
+  loadDrive();
+  tryClaim();
+  if (S.justJoined) {
+    S.justJoined = false;
+    const car = (await S.store.getVehicles(S.uid).catch(() => []))[0];
+    notifyCrew("join", { title: `👋 ${S.profile.callsign} joined ${S.crew.name}`, body: car ? `Rolling in a ${[car.year, car.make, car.model].filter(Boolean).join(" ")} · say hi in the chat` : "Say hi in the crew chat", url: "./?chat=1", tag: `join-${S.uid}` });
+  }
 }
 
 /* ---------------- map ---------------- */
@@ -438,9 +468,11 @@ $("#btn-locate").addEventListener("click", () => {
 });
 $("#btn-crewfit").addEventListener("click", fitCrew);
 function fitCrew() {
-  const pts = [...S.members.values()].filter((m) => m.id !== S.uid && ["live", "stale"].includes(memberState(m))).map((m) => [m.lat, m.lng]);
+  const others = [...S.members.values()].filter((m) => m.id !== S.uid);
+  let pts = others.filter((m) => ["live", "stale"].includes(memberState(m))).map((m) => [m.lat, m.lng]);
+  if (!pts.length) pts = others.filter((m) => memberState(m) === "seen").map((m) => [m.lat, m.lng]);
   if (S.pos) pts.push([S.pos.lat, S.pos.lng]);
-  if (!pts.length) return toast("Nobody from the crew is on the map right now.");
+  if (!pts.length) return toast("Nobody from the crew has been out in the last 24 hours.");
   if (pts.length === 1) S.map.flyTo(pts[0], 14, { duration: 0.6 });
   else S.map.flyToBounds(L.latLngBounds(pts).pad(0.25), { duration: 0.6, maxZoom: 15 });
 }
@@ -450,16 +482,17 @@ function renderMembers() {
   for (const m of S.members.values()) {
     if (m.id === S.uid) continue;
     const st = memberState(m);
-    if (st !== "live" && st !== "stale") continue;
+    if (st !== "live" && st !== "stale" && st !== "seen") continue;
     seen.add(m.id);
     const speed = st === "live" && m.speed > 1.5 ? ` <small>${kmh(m.speed)} km/h</small>` : "";
-    const car = m.car?.name ? ` <small>· ${esc(m.car.name)}</small>` : "";
+    const car = st !== "seen" && m.car?.name ? ` <small>· ${esc(m.car.name)}</small>` : "";
+    const ago = st === "seen" ? ` <small>· ${esc(fmtAgo(m.updatedAt))}</small>` : "";
     const liveTag = isLiveRun(m) ? `<span class="mk-live">LIVE</span>` : "";
-    const html = `<div class="mk ${st === "stale" ? "stale" : ""}${watchId === m.id ? " watched" : ""}"><div class="mk-pin" style="background:${colorFor(m.id)}"><span>${esc(initial(m.callsign))}</span></div><div class="mk-label">${liveTag}${esc(m.callsign)}${car}${speed}</div></div>`;
+    const html = `<div class="mk ${st === "stale" ? "stale" : st === "seen" ? "seen" : ""}${watchId === m.id ? " watched" : ""}"><div class="mk-pin" style="background:${colorFor(m.id)}"><span>${esc(initial(m.callsign))}</span></div><div class="mk-label">${liveTag}${esc(m.callsign)}${car}${speed}${ago}</div></div>`;
     let mk = S.markers.get(m.id);
     const icon = L.divIcon({ className: "", html, iconSize: [0, 0] });
     if (!mk) {
-      mk = L.marker([m.lat, m.lng], { icon, zIndexOffset: 500 }).addTo(S.map);
+      mk = L.marker([m.lat, m.lng], { icon, zIndexOffset: st === "seen" ? 100 : 500 }).addTo(S.map);
       mk.on("click", () => openMember(m.id));
       S.markers.set(m.id, mk);
     } else {
@@ -483,7 +516,7 @@ function startGps() {
   if (DEMO && !navigator.geolocation) return simulateMe();
   if (!navigator.geolocation) return gpsWarn("This browser can't share location.");
   S.watchId = navigator.geolocation.watchPosition(onFix, (err) => {
-    if (DEMO) { simulateMe(); return; }
+    if (DEMO && !S.pos) { simulateMe(); return; } // demo without GPS: pretend to drive
     gpsWarn(err.code === 1 ? "Location is blocked, so the crew can't see you. Tap here to fix it." : "Can't get a GPS fix yet… Tap here if this doesn't clear.", err.code === 1);
   }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 30000 });
 }
@@ -556,8 +589,12 @@ function onFix(p) {
     const dt = (fix.t - S.pos.t) / 1000, d = haversine(S.pos, fix);
     if (dt > 0.4) fix.speed = d < Math.max(fix.acc || 0, 5) ? 0 : d / dt;
   }
+  const derivedDt = rawSpeed == null && S.pos ? (fix.t - S.pos.t) : 0;
   S.pos = fix;
   speedFeed(fix, rawSpeed != null ? rawSpeed : fix.speed);
+  launchFeed(fix, rawSpeed != null ? rawSpeed : fix.speed, derivedDt);
+  driveFeed(fix, rawSpeed != null ? rawSpeed : fix.speed);
+  meetPresence(fix);
   if (fix.acc < 50) {
     // Phones often report every 5–10 s, which at speed skips whole road squares.
     // Fill in the straight line between this reading and the last good one.
@@ -617,7 +654,8 @@ async function flushExplored() {
   lsSet(`km:${S.uid}`, S.km);
   const me = S.members.get(S.uid);
   const cells = S.explored.size, km = Math.round(S.km);
-  if (me && (me.stats?.cells !== cells || me.stats?.km !== km)) S.store.updateMember(S.crew.id, S.uid, { stats: { cells, km } }).catch(() => {});
+  const stats = { ...myStats, cells, km };
+  if (me && S.statsMerged && JSON.stringify(me.stats || {}) !== JSON.stringify(stats)) S.store.updateMember(S.crew.id, S.uid, { stats }).catch(() => {});
   if (!S.pendingCells.size) return;
   const by = {};
   for (const c of S.pendingCells) (by[c.slice(0, PREFIX_PREC)] ||= []).push(c);
@@ -658,10 +696,12 @@ $("#btn-ghost").addEventListener("click", async () => {
 
 /* ---------------- views ---------------- */
 function setView(v) {
-  if (!["map", "convoy", "garage", "explore", "speed", "bass", "crew"].includes(v)) v = "map";
-  S.view = v; lsSet("view", v);
+  if (!["map", "convoy", "garage", "explore", "speed", "bass", "crew", "chat"].includes(v)) v = "map";
+  if (S.view !== "chat") S.prevView = S.view;
+  S.view = v; if (v !== "chat") lsSet("view", v);
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === v));
-  for (const id of ["convoy", "garage", "explore", "speed", "bass", "crew"]) $(`#view-${id}`).hidden = id !== v;
+  $("#btn-chat").setAttribute("aria-pressed", String(v === "chat"));
+  for (const id of ["convoy", "garage", "explore", "speed", "bass", "crew", "chat"]) $(`#view-${id}`).hidden = id !== v;
   if (v === "map") setTimeout(() => S.map.invalidateSize(), 30);
   renderActiveView();
 }
@@ -670,8 +710,10 @@ function renderActiveView() {
   if (S.view === "convoy") renderDrive();
   else if (S.view === "garage") renderGarage();
   else if (S.view === "explore") renderExplore();
-  else if (S.view === "speed" || S.view === "bass") { renderBoard(S.view); if (S.view === "speed") { renderSession(); renderLiveRunsCard(); } }
+  else if (S.view === "bass") renderBoard("bass");
+  else if (S.view === "speed") { setSpeedMode(S.speedMode, true); renderLiveRunsCard(); }
   else if (S.view === "crew") renderCrew();
+  else if (S.view === "chat") renderChat(true);
 }
 
 /* ---------------- convoy ---------------- */
@@ -764,7 +806,7 @@ function showConvoyOnMap(c) {
 }
 
 async function updateWakeLock() {
-  const want = (!!myConvoy() || !!session) && !document.hidden;
+  const want = (!!myConvoy() || !!session || (!!launch && launch.state !== "done")) && !document.hidden;
   try {
     if (want && !S.wakeLock && navigator.wakeLock) { S.wakeLock = await navigator.wakeLock.request("screen"); S.wakeLock.addEventListener("release", () => (S.wakeLock = null)); }
     if (!want && S.wakeLock) { await S.wakeLock.release(); S.wakeLock = null; }
@@ -815,6 +857,7 @@ $("#form-convoy").addEventListener("submit", async (e) => {
     name, dest: { ...S.pendingDest, label: $("#in-convoy-dest").value.trim() }, leaderId: S.uid,
     memberIds: [S.uid], active: true, createdAt: Date.now(),
   });
+    bumpStat("convoys");
   dlgConvoy.close();
   S.pendingDest = null;
   toast("Convoy started. The crew can join from the Meets tab.");
@@ -931,7 +974,7 @@ function openMeetView(id) {
     h("div", { class: "s", style: "color:var(--muted);margin-top:8px" }, `Posted by ${m.hostId === S.uid ? "you" : S.members.get(m.hostId)?.callsign || "a crew member"}`),
     goingRow(m),
     h("div", { class: "btn-row", style: "margin-top:14px" },
-      h("button", { class: `btn ${going ? "ghost" : "primary"} sm`, onclick: async () => { await S.store.rsvpMeet(S.crew.id, m.id, S.uid, !going); toast(going ? "You're out" : "You're in!"); dlgMeetView.close(); } }, going ? "Can't make it" : "I'm in"),
+      h("button", { class: `btn ${going ? "ghost" : "primary"} sm`, onclick: async () => { await S.store.rsvpMeet(S.crew.id, m.id, S.uid, !going); toast(going ? "You're out" : pushPrefs.meet !== false && S.pushOn ? "You're in! We'll remind you an hour before." : "You're in!"); dlgMeetView.close(); setTimeout(syncReminders, 500); } }, going ? "Can't make it" : "I'm in"),
       ...(nav ? [
         h("button", { class: "btn ghost sm", onclick: () => { dlgMeetView.close(); setView("map"); S.map.flyTo([m.place.lat, m.place.lng], 15); } }, "Show on map"),
         h("a", { class: "btn ghost sm", href: `https://www.google.com/maps/dir/?api=1&destination=${nav}`, target: "_blank", rel: "noopener" }, "Directions"),
@@ -988,6 +1031,7 @@ $("#btn-meet-delete").addEventListener("click", async (e) => {
   if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Tap again to cancel it"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Cancel meet"; }, 3000); return; }
   b.dataset.armed = ""; b.textContent = "Cancel meet";
   await S.store.deleteMeet(S.crew.id, meetDraft.editing.id);
+  remindApi({ op: "cancel", meet: meetDraft.editing.id });
   dlgMeet.close();
   toast("Meet cancelled");
 });
@@ -1012,7 +1056,10 @@ $("#form-meet").addEventListener("submit", async (e) => {
   const data = { title: $("#in-meet-title").value.trim(), when, notes: $("#in-meet-notes").value.trim(), place: { ...meetDraft.place, label: $("#in-meet-place").value.trim() || typed } };
   if (!data.title) return;
   const editing = meetDraft.editing;
-  if (editing) await S.store.updateMeet(S.crew.id, editing.id, data);
+  if (editing) {
+    await S.store.updateMeet(S.crew.id, editing.id, data);
+    if (editing.when !== data.when || editing.title !== data.title) remindApi({ op: "meet", meet: editing.id, when: data.when, title: data.title, place: data.place.label || "" });
+  }
   else {
     const id = await S.store.createMeet(S.crew.id, { ...data, hostId: S.uid, going: [S.uid], createdAt: Date.now() });
     const d = new Date(when);
@@ -1245,6 +1292,7 @@ $("#form-log").addEventListener("submit", async (e) => {
   const nv = { ...logCtx.v, log: [...(logCtx.v.log || []), entry].slice(-200) };
   await S.store.saveVehicle(S.uid, nv);
   logCtx.v = nv;
+  if (entry.type === "Mod") notifyCrew("mod", { title: `🔧 ${S.profile.callsign} added a mod`, body: `${entry.title} · ${nv.name}${entry.cost ? ` · ${fmtR(entry.cost)}` : ""}`, url: `./?member=${S.uid}`, tag: `mod-${S.uid}` });
   $("#form-log").hidden = true; $("#log-actions").hidden = false;
   renderLog();
   toast("Added to the log");
@@ -1421,6 +1469,8 @@ function syncActiveCar() {
 
 /* ---------------- explore ---------------- */
 function renderExplore() {
+  renderBadges();
+  renderDrives();
   const area = (cells) => cells * cellAreaKm2(S.pos?.lat ?? -26);
   const fmtArea = (v) => (v < 10 ? v.toFixed(1) : Math.round(v).toLocaleString("en-ZA"));
   const stat = (v, k) => h("div", { class: "stat" }, h("div", { class: "v" }, v), h("div", { class: "k" }, k));
@@ -1478,25 +1528,55 @@ const BOARDS = {
     badInput: "Enter the top speed in km/h, e.g. 212",
     read: () => ({ method: $("#in-speed-method").value }),
   },
+  t60: {
+    coll: "launch", field: "t60", unit: "s", dec: 2, asc: true, manual: false,
+    classes: ["Drag strip", "Track", "Airfield", "Road"], best: "Quickest", noun: "0–60 run",
+    line: (b) => [b.car, b.t100 ? `0–100 ${b.t100.toFixed(2)} s` : "", b.venue],
+    sub: (b) => [b.car, b.venue],
+    extra: () => "",
+    empty: "Arm the launch timer above, come to a dead stop and launch. Your 0–60 time lands here automatically.",
+  },
+  t100: {
+    coll: "launch", field: "t100", unit: "s", dec: 2, asc: true, manual: false,
+    classes: ["Drag strip", "Track", "Airfield", "Road"], best: "Quickest", noun: "0–100 run",
+    line: (b) => [b.car, b.qm ? `¼ mile ${b.qm.toFixed(2)} s` : "", b.venue],
+    sub: (b) => [b.car, b.venue],
+    extra: () => "",
+    empty: "Arm the launch timer above, come to a dead stop and launch. Your 0–100 time lands here automatically.",
+  },
+  qm: {
+    coll: "launch", field: "qm", unit: "s", dec: 2, asc: true, manual: false,
+    classes: ["Drag strip", "Track", "Airfield", "Road"], best: "Quickest", noun: "¼ mile run",
+    line: (b) => [b.car, b.trap ? `${b.trap} km/h trap` : "", b.venue],
+    sub: (b) => [b.car, b.trap ? `${b.trap} km/h trap` : ""],
+    extra: () => "",
+    empty: "Arm the launch timer and run the full 402 m. Your time and trap speed land here automatically.",
+  },
 };
+const BOARD_TITLE = { bass: "Bass", speed: "Top speed", t60: "0–60 km/h", t100: "0–100 km/h", qm: "Quarter mile" };
 const boardName = (uid) => (uid === S.uid ? `${S.profile.callsign} (you)` : S.members.get(uid)?.callsign || "Ex-member");
 const valText = (cfg, n, cls = "dbv") => h("span", { class: cls }, Number(n).toFixed(cfg.dec), h("small", {}, cfg.unit));
 const MEDALS = ["gold", "silver", "bronze"];
 
 function renderBoard(key) {
   const cfg = BOARDS[key], cur = S.boardClass[key];
-  const runs = (S.boards[key] || []).filter((b) => cur === "All" || b.cls === cur);
+  const weekly = key !== "bass" && S.period === "week";
+  const ws = weekStart();
+  const runs = (S.boards[key] || []).filter((b) => b[cfg.field] != null && (cur === "All" || b.cls === cur) && (!weekly || b.createdAt >= ws));
+  const better = (x, y) => (cfg.asc ? x < y : x > y);
+  if (key !== "bass") renderPeriod(key, cur);
   $(`#${key}-classes`).replaceChildren(...["All", ...cfg.classes].map((c) => h("button", { "aria-pressed": String(cur === c), onclick: () => { S.boardClass[key] = c; renderBoard(key); } }, c)));
 
   // each person's best
   const best = new Map();
-  for (const b of runs) { const p = best.get(b.uid); if (!p || b[cfg.field] > p[cfg.field]) best.set(b.uid, b); }
-  const board = [...best.values()].sort((a, b) => b[cfg.field] - a[cfg.field]);
+  for (const b of runs) { const p = best.get(b.uid); if (!p || better(b[cfg.field], p[cfg.field])) best.set(b.uid, b); }
+  const board = [...best.values()].sort((a, b) => (cfg.asc ? a[cfg.field] - b[cfg.field] : b[cfg.field] - a[cfg.field]));
 
   // podium: 2nd · 1st · 3rd
   const podium = $(`#${key}-podium`);
   if (!board.length) {
-    podium.replaceChildren(h("div", { class: "empty" }, h("div", { class: "big" }, `No ${cfg.noun}s yet`), h("p", {}, cur === "All" ? cfg.empty : `Nobody has logged a ${cur} ${cfg.noun} yet.`)));
+    podium.replaceChildren(h("div", { class: "empty" }, h("div", { class: "big" }, weekly ? `No ${cfg.noun}s this week` : `No ${cfg.noun}s yet`),
+      h("p", {}, weekly ? `The weekly board resets every Monday at midnight. Get the first ${cfg.noun} in and own the week.` : cur === "All" ? cfg.empty : `Nobody has logged a ${cur} ${cfg.noun} yet.`)));
   } else {
     const spot = (b, i) => b ? h("div", { class: `pod p${i + 1}` },
       h("div", { class: `medal ${MEDALS[i]}`, "aria-label": `${["1st", "2nd", "3rd"][i]} place` }, String(i + 1)),
@@ -1556,6 +1636,7 @@ function showPhoto(cfg, b) {
 
 for (const key of Object.keys(BOARDS)) {
   const cfg = BOARDS[key];
+  if (cfg.manual === false) continue;
   const dlg = $(`#dlg-${key}`);
   let photo = "";
   $(`#btn-add${key}`).addEventListener("click", () => {
@@ -1585,11 +1666,27 @@ for (const key of Object.keys(BOARDS)) {
         venue: $(`#in-${key}-venue`).value.trim(), photo, witnesses: [], createdAt: Date.now(), ...cfg.read(),
       });
       dlg.close();
-      const top = Math.max(0, ...(S.boards[key] || []).filter((b) => b.uid !== S.uid).map((b) => b[cfg.field]));
       const txt = `${val.toFixed(cfg.dec)} ${cfg.unit}`;
-      toast(val > top ? `${txt}. That's the new crew record!` : `${txt} logged`);
+      toast(claimRecord(key, val, $(`#in-${key}-car`).value.trim()) ? `${txt}. That's the new crew record!` : `${txt} logged`);
     } catch { toast("Couldn't save. The photo might be too big; try another one."); }
   });
+}
+
+/* ---------------- weekly speed boards ---------------- */
+// Speed boards default to this week (Monday 00:00 to Sunday night) so everyone gets a fresh shot every week.
+function weekStart(off = 0) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + off * 7); return d.getTime(); }
+function renderPeriod(key, cls) {
+  const box = $("#speed-period");
+  if (!box) return;
+  const cfg = BOARDS[key];
+  const prev = (S.boards[key] || []).filter((b) => b[cfg.field] != null && (cls === "All" || b.cls === cls) && b.createdAt >= weekStart(-1) && b.createdAt < weekStart());
+  const champ = prev.length ? prev.reduce((a, b) => ((cfg.asc ? b[cfg.field] < a[cfg.field] : b[cfg.field] > a[cfg.field]) ? b : a)) : null;
+  const left = Math.ceil((weekStart(1) - Date.now()) / 86400000);
+  fill(box,
+    h("div", { class: "chips" }, ...[["week", "This week"], ["all", "All time"]].map(([p, label]) => h("button", { "aria-pressed": String(S.period === p), onclick: () => { S.period = p; lsSet("speedPeriod", p); renderBoard(key); } }, label))),
+    S.period === "week" ? h("div", { class: "week-line" },
+      h("span", {}, `Resets ${left <= 1 ? "tonight at midnight" : `Monday 00:00 · ${left} days left`}`),
+      champ ? h("span", {}, "Last week: ", h("b", {}, `🏆 ${boardName(champ.uid)} ${Number(champ[cfg.field]).toFixed(cfg.dec)} ${cfg.unit}`)) : null) : null);
 }
 
 /* ---------------- watch a live speed run ---------------- */
@@ -1758,14 +1855,14 @@ async function endSession() {
   if (kmhTop < 20) { toast("Session ended. No clean GPS run was recorded."); return; }
   try {
     await S.store.addBoard(S.crew.id, "speed", { uid: S.uid, kmh: kmhTop, cls: s.cls, car: s.car, venue: s.venue, method: "GPS (auto)", photo: "", witnesses: [], createdAt: Date.now() });
-    const top = Math.max(0, ...(S.boards.speed || []).filter((b) => b.uid !== S.uid).map((b) => b.kmh));
-    toast(kmhTop > top ? `${kmhTop} km/h. That's the new crew record!` : `${kmhTop} km/h saved to the board`);
+    toast(claimRecord("speed", kmhTop, s.car) ? `${kmhTop} km/h. That's the new crew record!` : `${kmhTop} km/h saved to the board`);
   } catch { toast(`Couldn't save your ${kmhTop} km/h run. Check your signal and log it manually.`); }
 }
 
 function renderSession() {
   const box = $("#speed-session");
   if (!box || S.view !== "speed") return;
+  if (S.speedMode !== "speed" && !session) { renderLaunch(); return; }
   if (!session) {
     box.className = "session";
     box.replaceChildren(
@@ -1826,7 +1923,7 @@ $("#in-home-radius").addEventListener("change", (e) => { if (!home) return; home
 
 /* ---------------- notifications ---------------- */
 const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
-let pushPrefs = lsGet("pushPrefs", { run: true, meet: true });
+let pushPrefs = lsGet("pushPrefs", { run: true, meet: true, record: true, crew: true, chat: true });
 function b64uToBytes(s) { const b = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)); return Uint8Array.from(b, (c) => c.charCodeAt(0)); }
 async function currentSub() {
   if (DEMO) return lsGet("demoPush", false) ? { unsubscribe: async () => true } : null;
@@ -1853,6 +1950,7 @@ async function turnOnPush() {
     const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(VAPID_PUBLIC) });
     await savePushSub(sub);
     toast("Notifications on");
+    setTimeout(syncReminders, 300);
   } catch (e) {
     console.warn("push", e);
     toast("Couldn't turn on notifications on this phone.");
@@ -1864,6 +1962,7 @@ async function turnOffPush() {
   try { const sub = await currentSub(); if (sub) await sub.unsubscribe(); } catch {}
   if (S.crew) await S.store.deletePush(S.crew.id, S.uid).catch(() => {});
   toast("Notifications off");
+  setTimeout(syncReminders, 300);
   renderPush();
 }
 // keep the crew's copy of this phone's subscription fresh (phones rotate them now and then)
@@ -1875,9 +1974,11 @@ async function renderPush(force) {
   const sub = force ? null : await currentSub().catch(() => null);
   const state = force || (DEMO ? (sub ? "on" : "off") : !pushSupported() ? (isIOS() && !isStandalone() ? "ios-browser" : "unsupported")
     : Notification.permission === "denied" ? "blocked" : sub ? "on" : "off");
-  const pref = (key, label) => h("label", { class: "check" }, h("input", { type: "checkbox", id: `push-${key}`, ...(pushPrefs[key] ? { checked: true } : {}), onchange: async (e) => {
+  S.pushOn = state === "on";
+  const pref = (key, label) => h("label", { class: "check" }, h("input", { type: "checkbox", id: `push-${key}`, ...(pushPrefs[key] !== false ? { checked: true } : {}), onchange: async (e) => {
     pushPrefs = { ...pushPrefs, [key]: e.target.checked }; lsSet("pushPrefs", pushPrefs);
     const s = await currentSub(); if (s) await savePushSub(s);
+    if (key === "meet") syncReminders();
   } }), label);
   const text = {
     on: "On. You'll get a notification even when THE CREW is closed.",
@@ -1888,7 +1989,13 @@ async function renderPush(force) {
   }[state];
   box.replaceChildren(
     h("p", { class: "fine", style: "font-size:14px" }, text),
-    ...(state === "on" ? [pref("run", "Someone goes live on a speed run"), pref("meet", "A new meet is posted")] : []),
+    ...(state === "on" ? [
+      pref("run", "Someone goes live on a speed run"),
+      pref("meet", "Meets: new meets, a reminder 1 hour before ones you're going to, and when the host arrives"),
+      pref("record", "Someone takes #1 on a leaderboard"),
+      pref("crew", "New members and new mods"),
+      pref("chat", "Crew chat messages"),
+    ] : []),
     h("div", { class: "btn-row" },
       state === "off" ? h("button", { type: "button", class: "btn primary sm", onclick: turnOnPush }, "Turn on notifications")
         : state === "on" ? h("button", { type: "button", class: "btn ghost sm", onclick: turnOffPush }, "Turn off") : null),
@@ -1913,9 +2020,13 @@ function handleDeepLink(href) {
   let u;
   try { u = new URL(href || location.href); } catch { return; }
   const watch = u.searchParams.get("watch"), meet = u.searchParams.get("meet");
+  const chat = u.searchParams.get("chat"), board = u.searchParams.get("board"), member = u.searchParams.get("member");
   if (watch) S.pendingWatch = watch;
   if (meet) S.pendingMeet = meet;
-  if (watch || meet) history.replaceState(null, "", location.pathname);
+  if (member) S.pendingMember = member;
+  if (chat && S.crew) setView("chat");
+  if (board && BOARDS[board] && S.crew) { if (board === "bass") setView("bass"); else { S.speedMode = board; lsSet("speedMode", board); setView("speed"); } }
+  if (watch || meet || chat || board || member) history.replaceState(null, "", location.pathname);
   applyDeepLink();
 }
 function applyDeepLink() {
@@ -1925,6 +2036,7 @@ function applyDeepLink() {
     if (m && isLiveRun(m)) { watchRun(m.id); S.pendingWatch = null; }
     else if (m && S.members.size && !m.run) { toast(`${m.callsign}'s run has already ended`); S.pendingWatch = null; }
   }
+  if (S.pendingMember && S.members.has(S.pendingMember)) { openMember(S.pendingMember); S.pendingMember = null; }
   if (S.pendingMeet && S.meets.length) {
     if (S.meets.some((x) => x.id === S.pendingMeet)) { setView("convoy"); setSeg("meets"); openMeetView(S.pendingMeet); }
     S.pendingMeet = null;
@@ -1932,18 +2044,648 @@ function applyDeepLink() {
 }
 navigator.serviceWorker?.addEventListener("message", (e) => { if (e.data?.type === "open") handleDeepLink(e.data.url); });
 
+const fill = (el, ...kids) => el.replaceChildren(...kids.flat().filter((k) => k != null && k !== false));
+
+/* ---------------- stats & badges ---------------- */
+// My counters live on this phone and are copied onto my crew card so everyone sees my badges.
+let myStats = {};
+function mergeStats(server) {
+  const local = lsGet(`stats:${S.uid}`, {});
+  myStats = { ...local };
+  for (const [k, v] of Object.entries(server || {})) if (!["cells", "km"].includes(k) && typeof v === "number") myStats[k] = Math.max(v, myStats[k] || 0);
+  lsSet(`stats:${S.uid}`, myStats);
+  checkBadges(true);
+}
+function bumpStat(k, n = 1) { setStat(k, (myStats[k] || 0) + n); }
+function setStat(k, v) {
+  if (myStats[k] === v) return;
+  myStats[k] = v;
+  lsSet(`stats:${S.uid}`, myStats);
+  flushExplored();
+  checkBadges();
+}
+const statsFor = (uid) => (uid === S.uid ? { ...myStats, cells: S.explored.size, km: Math.round(S.km) } : S.members.get(uid)?.stats || {});
+
+function boardLeader(key) {
+  const cfg = BOARDS[key];
+  const runs = (S.boards[key] || []).filter((b) => b[cfg.field] != null);
+  if (!runs.length) return null;
+  return runs.reduce((a, b) => ((cfg.asc ? b[cfg.field] < a[cfg.field] : b[cfg.field] > a[cfg.field]) ? b : a)).uid;
+}
+const holdsRecord = (uid) => Object.keys(BOARDS).some((k) => boardLeader(k) === uid);
+
+const BADGES = [
+  { id: "km100", icon: "🛣️", name: "Road Tripper", desc: "Drive 100 km with THE CREW open", stat: "km", goal: 100 },
+  { id: "km1000", icon: "🏁", name: "Road Warrior", desc: "Drive 1 000 km", stat: "km", goal: 1000 },
+  { id: "km5000", icon: "🌍", name: "Long Haul", desc: "Drive 5 000 km", stat: "km", goal: 5000 },
+  { id: "exp500", icon: "🧭", name: "Explorer", desc: "Reveal 500 road tiles", stat: "cells", goal: 500 },
+  { id: "exp2000", icon: "🗺️", name: "Cartographer", desc: "Reveal 2 000 road tiles", stat: "cells", goal: 2000 },
+  { id: "drives25", icon: "🔑", name: "Daily Driver", desc: "Finish 25 drives", stat: "drives", goal: 25 },
+  { id: "night", icon: "🦉", name: "Night Owl", desc: "Start a drive between midnight and 4 am", stat: "night", goal: 1 },
+  { id: "meet1", icon: "🤝", name: "Showed Up", desc: "Turn up at a crew meet", stat: "meets", goal: 1 },
+  { id: "meet10", icon: "🎟️", name: "Regular", desc: "Turn up at 10 crew meets", stat: "meets", goal: 10 },
+  { id: "convoy3", icon: "🚩", name: "Convoy Leader", desc: "Lead 3 convoys", stat: "convoys", goal: 3 },
+  { id: "mods5", icon: "🔧", name: "Gearhead", desc: "Log 5 mods in your mod log", stat: "mods", goal: 5 },
+  { id: "launch", icon: "🚀", name: "Launch Control", desc: "Record a 0–100 run", stat: "launches", goal: 1 },
+  { id: "record", icon: "🏆", name: "Record Holder", desc: "Hold #1 on any crew board right now", live: holdsRecord },
+  { id: "founder", icon: "⭐", name: "Crew Founder", desc: "One of the founders of this crew", live: (uid) => isFounder(uid) },
+];
+const badgeEarned = (b, uid) => (b.live ? !!b.live(uid) : (statsFor(uid)[b.stat] || 0) >= b.goal);
+function checkBadges(silent) {
+  if (!S.uid) return;
+  const had = new Set(lsGet(`badges:${S.uid}`, []));
+  const now = BADGES.filter((b) => !b.live && badgeEarned(b, S.uid)).map((b) => b.id);
+  const fresh = now.filter((id) => !had.has(id));
+  if (!fresh.length) return;
+  lsSet(`badges:${S.uid}`, [...had, ...fresh]);
+  if (!silent && had.size) { const b = BADGES.find((x) => x.id === fresh[0]); toast(`🏅 New badge: ${b.icon} ${b.name}`); }
+  if (S.view === "explore") renderBadges();
+}
+function renderBadges() {
+  const box = $("#badges");
+  if (!box) return;
+  const items = BADGES.map((b) => {
+    const got = badgeEarned(b, S.uid);
+    const have = b.live ? null : Math.min(statsFor(S.uid)[b.stat] || 0, b.goal);
+    return { b, got, have };
+  }).sort((x, y) => (y.got ? 1 : 0) - (x.got ? 1 : 0));
+  fill(box, ...items.map(({ b, got, have }) => h("div", { class: `bdg${got ? " got" : ""}`, title: b.desc },
+    h("div", { class: "bdg-i" }, b.icon),
+    h("div", { class: "bdg-n" }, b.name),
+    h("div", { class: "bdg-d" }, got ? b.desc : b.live ? b.desc : `${Math.floor(have).toLocaleString("en-ZA")} / ${b.goal.toLocaleString("en-ZA")}`),
+    !got && !b.live ? h("div", { class: "bar" }, h("i", { style: `width:${Math.round((have / b.goal) * 100)}%` })) : null)));
+}
+
+/* ---------------- crew founders ---------------- */
+// The app founder (whoever set the crew up) sends one-use links; opening one claims a founder spot.
+let founders = [], founderClaims = [];
+const MAX_FOUNDERS = 2;
+const isFounder = (uid) => founders.some((f) => f.id === uid);
+const roleTag = (uid) => (isFounder(uid) ? "Founder" : "");
+const claimLink = (token) => `${location.origin}${location.pathname}?claim=${token}&crew=${S.crew.id}`;
+function renderFounders() {
+  const box = $("#founders");
+  if (!box || !S.crew) return;
+  const owner = S.crew.ownerId === S.uid;
+  const open = founderClaims.length, left = MAX_FOUNDERS - founders.length - open;
+  const share = async (token) => {
+    const text = `You're one of the founders of ${S.crew.name} 🏁 Tap this link to claim your founder spot on THE CREW: ${claimLink(token)}`;
+    try {
+      if (navigator.share) await navigator.share({ title: "Claim your founder spot", text });
+      else { await navigator.clipboard.writeText(text); toast("Link copied"); }
+    } catch (e) { if (e?.name !== "AbortError") { try { await navigator.clipboard.writeText(claimLink(token)); toast("Link copied"); } catch { toast(claimLink(token)); } } }
+  };
+  fill(box,
+    founders.length ? h("ul", { class: "rows" }, ...founders.map((f) => h("li", {},
+      avatar(f.id, S.members.get(f.id)?.callsign),
+      h("div", { class: "grow" }, h("div", { class: "n" }, "⭐ ", S.members.get(f.id)?.callsign || "Ex-member", f.id === S.uid ? " (you)" : ""), h("div", { class: "s" }, `Crew founder since ${fmtDate(new Date(f.at).toISOString().slice(0, 10))}`)),
+      owner ? h("button", { class: "btn ghost sm", onclick: async (e) => {
+        const b = e.currentTarget;
+        if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Tap again"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Remove"; }, 3000); return; }
+        await S.store.removeFounder(S.crew.id, f.id); toast("Founder removed");
+      } }, "Remove") : null))) : h("p", { class: "fine", style: "font-size:14px" }, owner ? "Nobody has claimed a founder spot yet." : "The crew founders haven't claimed their spots yet."),
+    owner && open ? h("div", { class: "stack", style: "margin-top:10px" }, h("div", { class: "lbl" }, "Links waiting to be claimed"),
+      ...founderClaims.map((c) => h("div", { class: "claim-row" },
+        h("div", { class: "grow" }, h("div", { class: "n", style: "font-size:14px" }, c.note || "Founder link"), h("div", { class: "s" }, `Made ${fmtAgo(c.createdAt)} · works once`)),
+        h("button", { class: "btn primary sm", onclick: () => share(c.id) }, "Send"),
+        h("button", { class: "btn ghost sm", onclick: async () => { await S.store.deleteFounderClaim(S.crew.id, c.id); toast("Link cancelled"); } }, "Cancel")))) : null,
+    owner && left > 0 ? h("form", { class: "stack", style: "margin-top:12px", onsubmit: async (e) => {
+      e.preventDefault();
+      const note = e.target.elements.who.value.trim();
+      const token = Array.from(crypto.getRandomValues(new Uint8Array(15)), (x) => "abcdefghjkmnpqrstuvwxyz23456789"[x % 31]).join("");
+      await S.store.createFounderClaim(S.crew.id, token, { createdAt: Date.now(), note: note ? `For ${note}` : "" });
+      e.target.reset();
+      share(token);
+    } },
+      h("label", { class: "lbl", for: "in-founder-who" }, `Send a founder link (${left} left)`),
+      h("div", { class: "row-end", style: "margin:0" }, h("input", { id: "in-founder-who", name: "who", maxlength: "20", placeholder: "Who it's for, e.g. Ruan" }), h("button", { class: "btn primary sm", type: "submit", style: "flex:none" }, "Make link"))) : null,
+    owner ? h("p", { class: "fine", style: "margin-top:8px" }, "Each link works once. Whoever opens it (and is in the crew) gets the ⭐ Crew Founder badge.") : null);
+}
+// Opened a founder link: remember it, then claim once inside the right crew.
+function notePendingClaim() {
+  try {
+    const u = new URL(location.href), t = u.searchParams.get("claim"), c = u.searchParams.get("crew");
+    if (t && c) { lsSet("pendingClaim", { token: t, crew: c.toUpperCase() }); history.replaceState(null, "", location.pathname); }
+  } catch {}
+}
+notePendingClaim();
+async function tryClaim() {
+  const p = lsGet("pendingClaim", null);
+  if (!p || !S.crew) return;
+  if (p.crew !== S.crew.id) { toast(`That founder link is for crew ${p.crew}. Join that crew first.`); return; }
+  lsSet("pendingClaim", null);
+  if (isFounder(S.uid)) { toast("You're already a founder of this crew ⭐"); return; }
+  try {
+    await S.store.claimFounder(S.crew.id, p.token, S.uid);
+    toast(`⭐ You're now a founder of ${S.crew.name}!`);
+    notifyCrew("join", { title: `⭐ ${S.profile.callsign} claimed a founder spot`, body: `${S.crew.name} has a new crew founder`, url: `./?member=${S.uid}`, tag: `founder-${S.uid}` });
+  } catch { toast("That founder link has already been used or cancelled. Ask for a new one."); }
+}
+
+/* ---------------- crew chat ---------------- */
+let chatMsgs = [], chatPhoto = "", chatFirst = true;
+const chatReadKey = () => `chatRead:${S.crew?.id}`;
+function onChatList(list) {
+  const prevIds = new Set(chatMsgs.map((m) => m.id));
+  chatMsgs = [...list].sort((a, b) => a.at - b.at);
+  if (!chatFirst && S.view !== "chat") {
+    const fresh = chatMsgs.filter((m) => !prevIds.has(m.id) && m.uid !== S.uid);
+    const m = fresh[fresh.length - 1];
+    if (m) toast(`💬 ${m.name}: ${m.text ? m.text.slice(0, 60) : "📷 Photo"}`);
+  }
+  chatFirst = false;
+  renderChatBadge();
+  if (S.view === "chat") renderChat();
+}
+function renderChatBadge() {
+  const read = lsGet(chatReadKey(), 0);
+  const n = chatMsgs.filter((m) => m.uid !== S.uid && m.at > read).length;
+  const b = $("#chat-badge");
+  b.hidden = !n || S.view === "chat";
+  b.textContent = n > 9 ? "9+" : String(n);
+}
+const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
+function dayLabel(t) {
+  const d = new Date(t), today = new Date();
+  if (sameDay(t, today)) return "Today";
+  if (sameDay(t, today.getTime() - 86400000)) return "Yesterday";
+  return `${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`;
+}
+function renderChat(jump) {
+  const list = $("#chat-list");
+  const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 120;
+  lsSet(chatReadKey(), Date.now());
+  renderChatBadge();
+  const out = [];
+  let prev = null;
+  for (const m of chatMsgs) {
+    if (!prev || !sameDay(prev.at, m.at)) out.push(h("div", { class: "chat-day" }, dayLabel(m.at)));
+    const mine = m.uid === S.uid, cont = prev && prev.uid === m.uid && m.at - prev.at < 5 * 60000 && sameDay(prev.at, m.at);
+    const bubble = h("div", { class: `msg${mine ? " mine" : ""}${cont ? " cont" : ""}` },
+      !mine && !cont ? avatar(m.uid, m.name) : h("div", { class: "av-sp" }),
+      h("div", { class: "bub" },
+        !mine && !cont ? h("div", { class: "who", style: `color:${colorFor(m.uid)}` }, S.members.get(m.uid)?.callsign || m.name) : null,
+        m.photo ? h("img", { class: "chat-img", src: m.photo, alt: "Photo", loading: "lazy", onclick: () => { fill($("#member-body"), h("img", { class: "photo-big", src: m.photo, alt: "Photo" })); dlgMember.showModal(); } }) : null,
+        m.text ? h("div", { class: "txt" }, m.text) : null,
+        h("div", { class: "meta" }, fmtTime(m.at),
+          mine ? h("button", { class: "msg-del", onclick: (e) => {
+            const b = e.currentTarget;
+            if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "tap again"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "delete"; }, 3000); return; }
+            S.store.deleteChat(S.crew.id, m.id);
+          } }, "delete") : null)));
+    out.push(bubble);
+    prev = m;
+  }
+  fill(list, ...(out.length ? out : [h("div", { class: "empty" }, h("div", { class: "big" }, "Say something"), h("p", {}, "Messages here go to everyone in the crew."))]));
+  if (jump || nearBottom) requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; });
+}
+$("#btn-chat").addEventListener("click", () => setView(S.view === "chat" ? S.prevView || "map" : "chat"));
+$("#btn-chat-close").addEventListener("click", () => setView(S.prevView || "map"));
+const chatIn = $("#in-chat");
+chatIn.addEventListener("input", () => { chatIn.style.height = "auto"; chatIn.style.height = Math.min(chatIn.scrollHeight, 120) + "px"; });
+chatIn.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer:coarse)").matches) { e.preventDefault(); $("#form-chat").requestSubmit(); } });
+$("#in-chat-photo").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f) return;
+  try { chatPhoto = await capSize(await shrinkImage(f, 1100, 0.78), 650000); const img = $("#chat-photo-preview"); img.src = chatPhoto; img.hidden = false; }
+  catch { toast("Couldn't read that photo. Try a JPG or PNG."); }
+});
+$("#chat-photo-preview").addEventListener("click", () => { chatPhoto = ""; $("#chat-photo-preview").hidden = true; });
+$("#form-chat").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = chatIn.value.trim().slice(0, 1000);
+  if (!text && !chatPhoto) return;
+  const msg = { uid: S.uid, name: S.profile.callsign, text, at: Date.now(), ...(chatPhoto ? { photo: chatPhoto } : {}) };
+  chatIn.value = ""; chatIn.style.height = "auto";
+  const photo = chatPhoto;
+  chatPhoto = ""; $("#chat-photo-preview").hidden = true;
+  try {
+    await S.store.sendChat(S.crew.id, msg);
+    renderChat(true);
+    notifyCrew("chat", { title: `💬 ${S.profile.callsign}`, body: text ? text.slice(0, 150) : "📷 Sent a photo", url: "./?chat=1", tag: `chat-${S.crew.id}` });
+  } catch {
+    chatIn.value = text; chatPhoto = photo;
+    toast("Couldn't send. Check your signal and try again.");
+  }
+});
+
+/* ---------------- launch timer: 0–100 km/h and quarter mile ---------------- */
+// Uses GPS speed. The exact start is worked out from the first two moving readings,
+// and the 100 km/h and 402 m marks are found between readings, so 1-second GPS still gives good times.
+const V60 = 60 / 3.6, V100 = 100 / 3.6, QM = 402.336;
+let launch = null; // {state, cls, venue, car, ...}
+function setSpeedMode(mode, skipSave) {
+  if (!["speed", "t60", "t100", "qm"].includes(mode)) mode = "speed";
+  S.speedMode = mode;
+  if (!skipSave) lsSet("speedMode", mode);
+  document.querySelectorAll("#view-speed .seg3 button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.mode === mode)));
+  for (const k of ["speed", "t60", "t100", "qm"]) $(`#pane-${k}`).hidden = k !== mode;
+  $("#btn-addspeed").hidden = mode !== "speed";
+  renderBoard(mode);
+  renderSession();
+}
+document.querySelectorAll("#view-speed .seg3 button").forEach((b) => b.addEventListener("click", () => setSpeedMode(b.dataset.mode)));
+
+function armLaunch() {
+  if (session) { toast("End your speed session first."); return; }
+  const active = S.myVehicles.find((v) => v.active);
+  launch = { state: "armed", cls: $("#in-launch-class")?.value || "Drag strip", venue: $("#in-launch-venue")?.value.trim() || "", car: active?.name || "", stillSince: null };
+  lsSet("launchPrefs", { cls: launch.cls, venue: launch.venue });
+  updateWakeLock();
+  renderLaunch();
+}
+function cancelLaunch() { launch = null; updateWakeLock(); renderLaunch(); }
+
+function launchFeed(fix, v, derivedDt) {
+  if (!launch || launch.state === "done" || v == null || fix.acc > 25) return;
+  // a speed worked out from two positions is the average between them, so it belongs to the midpoint in time
+  const t = derivedDt ? fix.t - derivedDt / 2 : fix.t;
+  const L = launch;
+  if (L.state === "armed" || L.state === "ready") {
+    if (v < 0.6) {
+      // a worked-out speed of ~0 only proves the car was still at the START of that interval
+      const stillAt = derivedDt ? fix.t - derivedDt : fix.t;
+      L.stillSince ??= stillAt; L.lastStill = stillAt;
+      if (L.state === "armed" && t - L.stillSince >= 1500) { L.state = "ready"; renderLaunch(); }
+      return;
+    }
+    L.stillSince = null;
+    if (L.state === "armed") return; // rolling: wait for a full stop
+    if (v < 1.0) return;
+    Object.assign(L, { state: "running", first: { t, v }, prev: { t, v }, dist: 0, top: v, t60: null, t100: null, qm: null, trap: null, tStart: null });
+    renderLaunch();
+    return;
+  }
+  // running
+  const p = L.prev;
+  const dt = (t - p.t) / 1000;
+  if (dt <= 0) return;
+  if (dt > 3.5) return finishLaunch("GPS signal dropped during the run.");
+  if (L.tStart == null) {
+    // extrapolate back to zero speed with the acceleration between the first two readings
+    const a = (v - L.first.v) / ((t - L.first.t) / 1000);
+    let ts = a > 0.3 ? L.first.t - (L.first.v / a) * 1000 : L.first.t - 500;
+    ts = Math.min(L.first.t, Math.max(ts, (L.lastStill ?? L.first.t - 3000)));
+    L.tStart = ts;
+    L.dist = (L.first.v / 2) * ((L.first.t - ts) / 1000);
+    // the 100 / 402 m marks can't fall before the first reading at these speeds, so carry on below
+  }
+  const d0 = L.dist;
+  L.dist += ((p.v + v) / 2) * dt;
+  if (L.t60 == null && p.v < V60 && v >= V60) L.t60 = (p.t + ((V60 - p.v) / (v - p.v)) * (t - p.t) - L.tStart) / 1000;
+  if (L.t100 == null && p.v < V100 && v >= V100) L.t100 = (p.t + ((V100 - p.v) / (v - p.v)) * (t - p.t) - L.tStart) / 1000;
+  if (L.qm == null && d0 < QM && L.dist >= QM) {
+    const f = (QM - d0) / (L.dist - d0);
+    L.qm = (p.t + f * (t - p.t) - L.tStart) / 1000;
+    L.trap = Math.round((p.v + f * (v - p.v)) * 3.6);
+  }
+  L.top = Math.max(L.top, v);
+  L.prev = { t, v };
+  L.now = v;
+  if (L.qm != null) return finishLaunch();
+  if (v < L.top - 4) return finishLaunch(L.t60 == null ? "You lifted before 60 km/h." : L.t100 == null ? "You lifted before 100 km/h." : null);
+  if ((t - L.tStart) / 1000 > 40) return finishLaunch("Run took longer than 40 s.");
+  renderLaunch();
+}
+async function finishLaunch(why) {
+  const L = launch;
+  const t60 = L.t60 != null && L.t60 > 1 && L.t60 < 20 ? Math.round(L.t60 * 100) / 100 : null;
+  const t100 = L.t100 != null && L.t100 > 1.8 && L.t100 < 30 ? Math.round(L.t100 * 100) / 100 : null;
+  const qm = L.qm != null && L.qm > 7 && L.qm < 35 ? Math.round(L.qm * 100) / 100 : null;
+  launch = { ...L, state: "done", result: { t60, t100, qm, trap: qm ? L.trap : null, why } };
+  updateWakeLock();
+  renderLaunch();
+  if (t60 == null && t100 == null && qm == null) return;
+  bumpStat("launches");
+  try {
+    await S.store.addBoard(S.crew.id, "launch", { uid: S.uid, t60, t100, qm, trap: qm ? L.trap : null, cls: L.cls, car: L.car, venue: L.venue, method: "GPS (auto)", photo: "", witnesses: [], createdAt: Date.now() });
+    const rec = [t60 != null && claimRecord("t60", t60, L.car), t100 != null && claimRecord("t100", t100, L.car), qm != null && claimRecord("qm", qm, L.car)].some(Boolean);
+    toast(rec ? "That's a new crew record! 🏆" : "Run saved to the board");
+  } catch { toast("Couldn't save the run. Check your signal."); }
+}
+function renderLaunch() {
+  const box = $("#speed-session");
+  if (!box || S.view !== "speed" || S.speedMode === "speed") return;
+  const prefs = lsGet("launchPrefs", { cls: "Drag strip", venue: "" });
+  const L = launch;
+  if (!L) {
+    box.className = "session";
+    fill(box, 
+      h("div", {}, h("div", { class: "car-name" }, "Launch timer"),
+        h("div", { class: "s", style: "color:var(--muted);margin-top:4px" }, "Times 0–60, 0–100 km/h and the ¼ mile (402 m) from GPS. Arm it, come to a dead stop, then launch. Only on a track, drag strip or closed road.")),
+      h("div", { class: "grid2" },
+        h("div", {}, h("label", { class: "lbl", for: "in-launch-class" }, "Where"),
+          h("select", { id: "in-launch-class" }, ...BOARDS.t100.classes.map((c) => h("option", c === prefs.cls ? { selected: true } : {}, c)))),
+        h("div", {}, h("label", { class: "lbl", for: "in-launch-venue" }, "Venue"), h("input", { id: "in-launch-venue", maxlength: "40", placeholder: "Tarlton", value: prefs.venue || "" }))),
+      h("button", { class: "btn primary wide", onclick: armLaunch }, "Arm launch timer"),
+      h("div", { class: "s", style: "color:var(--muted);font-size:12px;text-align:center" }, "Phone GPS is accurate to about ±0.2 s. Mount the phone, keep THE CREW open and the screen on."));
+    return;
+  }
+  if (L.state === "done") {
+    const r = L.result;
+    box.className = "session";
+    fill(box, 
+      h("div", { class: "car-name" }, r.t60 || r.t100 || r.qm ? "Run complete" : "No time recorded"),
+      r.t60 || r.t100 || r.qm ? h("div", { class: "launch-res four" },
+        h("div", {}, h("b", {}, r.t60 ? r.t60.toFixed(2) : "–"), h("span", {}, "0–60 s")),
+        h("div", {}, h("b", {}, r.t100 ? r.t100.toFixed(2) : "–"), h("span", {}, "0–100 s")),
+        h("div", {}, h("b", {}, r.qm ? r.qm.toFixed(2) : "–"), h("span", {}, "¼ mile s")),
+        h("div", {}, h("b", {}, r.trap ? String(r.trap) : "–"), h("span", {}, "trap km/h"))) : null,
+      r.why ? h("div", { class: "s", style: "color:var(--muted)" }, r.why) : null,
+      h("div", { class: "btn-row" }, h("button", { class: "btn primary sm", onclick: armLaunch }, "Run again"), h("button", { class: "btn ghost sm", onclick: cancelLaunch }, "Done")));
+    return;
+  }
+  const running = L.state === "running";
+  const el = running && L.tStart ? ((L.prev.t - L.tStart) / 1000).toFixed(1) : "0.0";
+  box.className = `session live${L.state === "ready" ? " ready" : ""}`;
+  fill(box, 
+    h("div", { class: "s", style: "color:var(--fg);font-weight:600;text-align:center" },
+      L.state === "armed" ? (S.pos ? "Armed · come to a complete stop" : "Armed · waiting for GPS…") : L.state === "ready" ? "READY · launch when you want" : "Timing…"),
+    h("div", { class: "gauge" },
+      h("div", { class: "now" }, String(Math.round((running ? L.now || 0 : (S.pos?.speed || 0)) * 3.6)), h("small", {}, "km/h")),
+      h("div", { class: "meta" },
+        h("div", {}, h("b", {}, el), "seconds"),
+        h("div", {}, h("b", {}, L.t60 != null ? L.t60.toFixed(2) : "–"), "0–60"),
+        h("div", {}, h("b", {}, L.t100 != null ? L.t100.toFixed(2) : "–"), "0–100"),
+        h("div", {}, h("b", {}, running ? `${Math.round(L.dist || 0)}` : "0"), "metres"))),
+    h("button", { class: "btn danger wide", onclick: cancelLaunch }, "Cancel"));
+}
+
+// Tell the crew when you take #1. Returns true when this beats everyone else.
+function claimRecord(key, val, car) {
+  const cfg = BOARDS[key];
+  const others = (S.boards[key] || []).filter((b) => b.uid !== S.uid && b[cfg.field] != null).map((b) => b[cfg.field]);
+  if (!others.length) return false;
+  const best = cfg.asc ? Math.min(...others) : Math.max(...others);
+  if (!(cfg.asc ? val < best : val > best)) return false;
+  notifyCrew("record", { title: `🏆 New crew record: ${S.profile.callsign}`, body: `${BOARD_TITLE[key]} · ${Number(val).toFixed(cfg.dec)} ${cfg.unit}${car ? ` in the ${car}` : ""} · tap to see the board`, url: `./?board=${key}`, tag: `record-${key}` });
+  return true;
+}
+
+/* ---------------- drive recap ---------------- */
+// A drive starts when you get going and ends after 4 minutes parked (or if the app was closed for 10+ minutes).
+let drive = null;
+const driveKey = () => `drive:${S.uid}`, drivesKey = () => `drives:${S.uid}`;
+function loadDrive() {
+  drive = lsGet(driveKey(), null);
+  checkDriveEnd();
+  if (DEMO && !lsGet(drivesKey(), []).length) seedDemoDrive();
+}
+function driveFeed(fix, v) {
+  if (fix.acc > 40) return;
+  const t = fix.t;
+  if (!drive) {
+    if (v == null || v < 5) return;
+    drive = { start: t, moving: t, last: t, pts: [[+fix.lat.toFixed(5), +fix.lng.toFixed(5), t]], dist: 0, top: 0, cells0: S.explored.size };
+  }
+  const lp = drive.pts[drive.pts.length - 1];
+  const d = haversine({ lat: lp[0], lng: lp[1] }, fix), dt = (t - lp[2]) / 1000;
+  if (d > 30 && d < 3000 && dt > 0 && d / dt < 75) {
+    drive.dist += d;
+    drive.pts.push([+fix.lat.toFixed(5), +fix.lng.toFixed(5), t]);
+    if (drive.pts.length > 1500) drive.pts = drive.pts.filter((_, i) => i % 2 === 0 || i === drive.pts.length - 1);
+  }
+  if (v != null && fix.acc <= 20 && v < 90) {
+    drive.recent = [...(drive.recent || []), v].slice(-3);
+    if (drive.recent.length === 3) drive.top = Math.max(drive.top, Math.min(...drive.recent)); // held over 3 readings
+  }
+  if (v != null && v > 1.5) drive.moving = t;
+  drive.last = t;
+  if (t - (drive.saved || 0) > 15000) { drive.saved = t; lsSet(driveKey(), drive); }
+  checkDriveEnd();
+}
+function checkDriveEnd() {
+  if (!drive) return;
+  const now = Date.now();
+  if (now - drive.moving > 4 * 60000 || now - drive.last > 10 * 60000) finishDrive();
+}
+function finishDrive() {
+  const d = drive;
+  drive = null;
+  lsSet(driveKey(), null);
+  if (!d || d.dist < 1500) return;
+  const end = d.moving;
+  const rec = {
+    id: `d${d.start.toString(36)}`, start: d.start, end, km: Math.round(d.dist / 100) / 10,
+    top: Math.round(d.top * 3.6), avg: Math.round((d.dist / Math.max(1, (end - d.start) / 1000)) * 3.6),
+    tiles: Math.max(0, S.explored.size - (d.cells0 || S.explored.size)), car: S.myVehicles.find((v) => v.active)?.name || "",
+    pts: simplifyPts(d.pts.map((p) => [p[0], p[1]]), 400),
+  };
+  lsSet(drivesKey(), [rec, ...lsGet(drivesKey(), [])].slice(0, 30));
+  bumpStat("drives");
+  const hr = new Date(d.start).getHours();
+  if (hr < 4) bumpStat("night");
+  if (S.view === "explore") renderDrives();
+  if (!document.hidden) openRecap(rec);
+  else toast(`Drive saved · ${rec.km} km`);
+}
+function simplifyPts(pts, max) {
+  if (pts.length <= max) return pts;
+  const step = pts.length / max;
+  return Array.from({ length: max }, (_, i) => pts[Math.min(pts.length - 1, Math.round(i * step))]).concat([pts[pts.length - 1]]);
+}
+function seedDemoDrive() {
+  import("./store-demo.js").then(({ DEMO_ME_ROUTE }) => {
+    const pts = DEMO_ME_ROUTE.map((p) => [p.lat, p.lng]);
+    let km = 0; for (let i = 1; i < pts.length; i++) km += haversine({ lat: pts[i - 1][0], lng: pts[i - 1][1] }, { lat: pts[i][0], lng: pts[i][1] }) / 1000;
+    const start = Date.now() - 26 * 3600000;
+    lsSet(drivesKey(), [{ id: "ddemo", start, end: start + 41 * 60000, km: Math.round(km * 10) / 10, top: 118, avg: Math.round(km / (41 / 60)), tiles: 212, car: "Hellux", pts }]);
+    if (S.view === "explore") renderDrives();
+  });
+}
+const fmtDur = (ms) => { const m = Math.round(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}` : `${m} min`; };
+function renderDrives() {
+  const box = $("#drives");
+  if (!box) return;
+  const list = lsGet(drivesKey(), []);
+  fill(box, ...(list.length ? list.slice(0, 10).map((d) => {
+    const s = new Date(d.start);
+    return h("button", { class: "drive", onclick: () => openRecap(d) },
+      routeSvg(d.pts, 64, 48),
+      h("div", { class: "grow" }, h("div", { class: "n" }, `${d.km} km · ${fmtDur(d.end - d.start)}`),
+        h("div", { class: "s" }, `${dayLabel(d.start)} ${fmtTime(d.start)}${d.tiles ? ` · ${d.tiles} new road tiles` : ""}`)),
+      h("span", { class: "s", style: "color:var(--accent)" }, "Recap ›"));
+  }) : [h("div", { class: "empty", style: "padding:18px" }, h("p", {}, "Drive with THE CREW open and you'll get a recap card after each drive, ready to share."))]));
+}
+function routeSvg(pts, w, hgt) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${hgt}`); svg.setAttribute("class", "route-mini"); svg.setAttribute("aria-hidden", "true");
+  const xy = projectPts(pts, w, hgt, 5);
+  const path = document.createElementNS(ns, "polyline");
+  path.setAttribute("points", xy.map((p) => p.join(",")).join(" "));
+  path.setAttribute("fill", "none"); path.setAttribute("stroke", "#ffb020"); path.setAttribute("stroke-width", "2"); path.setAttribute("stroke-linejoin", "round"); path.setAttribute("stroke-linecap", "round");
+  svg.append(path);
+  return svg;
+}
+function projectPts(pts, w, hgt, pad) {
+  if (!pts?.length) return [];
+  const lat0 = pts[0][0] * Math.PI / 180;
+  const raw = pts.map(([la, ln]) => [ln * Math.cos(lat0), -la]);
+  const xs = raw.map((p) => p[0]), ys = raw.map((p) => p[1]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const sc = Math.min((w - 2 * pad) / Math.max(maxX - minX, 1e-9), (hgt - 2 * pad) / Math.max(maxY - minY, 1e-9));
+  const ox = (w - (maxX - minX) * sc) / 2, oy = (hgt - (maxY - minY) * sc) / 2;
+  return raw.map(([x, y]) => [+((x - minX) * sc + ox).toFixed(1), +((y - minY) * sc + oy).toFixed(1)]);
+}
+const dlgRecap = $("#dlg-recap");
+let recapBlob = null, recapDrive = null;
+$("#btn-recap-close").addEventListener("click", () => dlgRecap.close());
+async function openRecap(d) {
+  recapDrive = d; recapBlob = null;
+  const stat = (v, k) => h("div", { class: "stat" }, h("div", { class: "v", style: "font-size:24px" }, v), h("div", { class: "k" }, k));
+  const img = h("img", { class: "recap-img", alt: "Drive recap image" });
+  fill($("#recap-body"), 
+    h("div", { class: "car-name" }, "Drive recap"),
+    h("div", { class: "s", style: "color:var(--muted);margin:4px 0 10px" }, `${dayLabel(d.start)} · ${fmtTime(d.start)}–${fmtTime(d.end)}${d.car ? ` · ${d.car}` : ""}`),
+    img,
+    h("div", { class: "stats", style: "margin-top:10px" }, stat(`${d.km}`, "km"), stat(fmtDur(d.end - d.start), "time"), stat(`${d.tiles || 0}`, "new tiles")));
+  dlgRecap.showModal();
+  const canvas = await drawRecap(d);
+  img.src = canvas.toDataURL("image/jpeg", 0.9);
+  canvas.toBlob((b) => { recapBlob = b; }, "image/jpeg", 0.92);
+}
+$("#btn-recap-share").addEventListener("click", async () => {
+  if (!recapBlob) { toast("Still making the image…"); return; }
+  const name = `the-crew-drive-${new Date(recapDrive.start).toISOString().slice(0, 10)}.jpg`;
+  const file = new File([recapBlob], name, { type: "image/jpeg" });
+  try {
+    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: "THE CREW drive" }); return; }
+  } catch (e) { if (e?.name === "AbortError") return; }
+  const a = h("a", { href: URL.createObjectURL(recapBlob), download: name });
+  document.body.append(a); a.click(); a.remove();
+  toast("Image saved");
+});
+async function drawRecap(d) {
+  try { await document.fonts.ready; await document.fonts.load("800 80px 'Saira Condensed'"); } catch {}
+  const W = 1080, H = 1350;
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  const bg = g.createRadialGradient(W / 2, 0, 50, W / 2, 200, 1300);
+  bg.addColorStop(0, "#3a2706"); bg.addColorStop(0.45, "#121821"); bg.addColorStop(1, "#0b0f15");
+  g.fillStyle = bg; g.fillRect(0, 0, W, H);
+  // faint grid like a night map
+  g.strokeStyle = "rgba(255,255,255,.035)"; g.lineWidth = 2;
+  for (let x = 0; x < W; x += 60) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+  for (let y = 0; y < H; y += 60) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+  const disp = "'Saira Condensed','Arial Narrow',sans-serif", body = "Barlow,system-ui,sans-serif";
+  g.fillStyle = "#ffb020"; g.font = `800 64px ${disp}`; g.textBaseline = "top";
+  g.fillText("THE CREW", 70, 64);
+  g.fillStyle = "#8b97a8"; g.font = `600 30px ${body}`;
+  g.fillText((S.crew?.name || "").toUpperCase(), 72, 138);
+  g.textAlign = "right"; g.fillStyle = "#e8edf4"; g.font = `600 30px ${body}`;
+  const ds = new Date(d.start);
+  g.fillText(`${DAYS[ds.getDay()]} ${ds.getDate()} ${MONTHS[ds.getMonth()]} ${ds.getFullYear()}`, W - 70, 74);
+  g.fillStyle = "#8b97a8"; g.fillText(`${fmtTime(d.start)} – ${fmtTime(d.end)}`, W - 70, 114);
+  g.textAlign = "left";
+  // route
+  const box = { x: 70, y: 210, w: W - 140, h: 640 };
+  g.fillStyle = "rgba(21,27,36,.75)"; roundRect(g, box.x, box.y, box.w, box.h, 28); g.fill();
+  g.strokeStyle = "#2a3443"; g.lineWidth = 2; g.stroke();
+  const xy = projectPts(d.pts, box.w, box.h, 60).map(([x, y]) => [x + box.x, y + box.y]);
+  if (xy.length > 1) {
+    g.lineJoin = "round"; g.lineCap = "round";
+    g.shadowColor = "rgba(255,176,32,.8)"; g.shadowBlur = 30;
+    g.strokeStyle = "#ffb020"; g.lineWidth = 9;
+    g.beginPath(); xy.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.stroke();
+    g.shadowBlur = 0;
+    g.strokeStyle = "#fff3d6"; g.lineWidth = 3; g.stroke();
+    const dot = ([x, y], col) => { g.fillStyle = col; g.beginPath(); g.arc(x, y, 16, 0, Math.PI * 2); g.fill(); g.strokeStyle = "#0b0f15"; g.lineWidth = 5; g.stroke(); };
+    dot(xy[0], "#3ddc97"); dot(xy[xy.length - 1], "#ff5d5d");
+  }
+  // stats
+  const stats = [[`${d.km}`, "KM DRIVEN"], [fmtDur(d.end - d.start).toUpperCase(), "TIME"], [`${d.avg || 0}`, "AVG KM/H"], [`${d.tiles || 0}`, "NEW ROAD TILES"]];
+  const sw = (W - 140 - 3 * 24) / 4;
+  stats.forEach(([v, k], i) => {
+    const x = 70 + i * (sw + 24), y = 890;
+    g.fillStyle = "rgba(21,27,36,.9)"; roundRect(g, x, y, sw, 170, 22); g.fill(); g.strokeStyle = "#2a3443"; g.lineWidth = 2; g.stroke();
+    g.fillStyle = i === 0 ? "#ffb020" : "#e8edf4"; g.font = `800 ${v.length > 6 ? 54 : 70}px ${disp}`;
+    g.fillText(v, x + 24, y + 26);
+    g.fillStyle = "#8b97a8"; g.font = `600 22px ${body}`;
+    g.fillText(k, x + 24, y + 122);
+  });
+  // driver
+  const me = S.profile.callsign || "";
+  g.fillStyle = colorFor(S.uid); g.beginPath(); g.arc(110, 1170, 40, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#0d1117"; g.font = `800 44px ${disp}`; g.textAlign = "center"; g.fillText(initial(me), 110, 1146); g.textAlign = "left";
+  g.fillStyle = "#e8edf4"; g.font = `800 48px ${disp}`; g.fillText(me.toUpperCase(), 170, 1126);
+  g.fillStyle = "#8b97a8"; g.font = `500 28px ${body}`; g.fillText(d.car || "", 172, 1180);
+  g.fillStyle = "#5b6676"; g.font = `500 24px ${body}`; g.textAlign = "right";
+  g.fillText("Recorded with THE CREW", W - 70, 1260); g.textAlign = "left";
+  return c;
+}
+function roundRect(g, x, y, w, hh, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + hh, r); g.arcTo(x + w, y + hh, x, y + hh, r); g.arcTo(x, y + hh, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
+
+/* ---------------- meets: turning up, host arrived, reminders ---------------- */
+function meetPresence(fix) {
+  if (!S.meets?.length || fix.acc > 60) return;
+  const now = Date.now();
+  for (const m of S.meets) {
+    if (!m.place) continue;
+    const dt = now - m.when;
+    if (dt < -60 * 60000 || dt > 150 * 60000) continue;
+    if (haversine(fix, m.place) > 250) continue;
+    if (dt > -45 * 60000 && !lsGet(`att:${m.id}`, false)) { lsSet(`att:${m.id}`, true); bumpStat("meets"); }
+    if (m.hostId === S.uid && !lsGet(`arr:${m.id}`, false) && !S.ghost && !S.homeHidden) {
+      lsSet(`arr:${m.id}`, true);
+      notifyCrew("arrived", { title: `📍 ${S.profile.callsign} is at ${m.title}`, body: `${m.place.label || "The meet spot"} · ${(m.going || []).length} going · tap for directions`, url: `./?meet=${m.id}`, tag: `arr-${m.id}` });
+    }
+  }
+}
+async function remindApi(body) {
+  if (!NOTIFY_URL || DEMO || !S.crew) return false;
+  try {
+    const token = await S.store.getToken();
+    if (!token) return false;
+    const r = await fetch(NOTIFY_URL.replace(/\/$/, "") + "/remind", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ crew: S.crew.id, ...body }), keepalive: true,
+    });
+    return r.ok;
+  } catch { return false; }
+}
+// Keep my 1-hour-before reminders in step with the meets I'm going to.
+let syncingReminders = false;
+async function syncReminders() {
+  if (!NOTIFY_URL || DEMO || !S.crew || !S.meetsLoaded || syncingReminders) return;
+  syncingReminders = true;
+  try {
+    const sub = await currentSub().catch(() => null);
+    const on = !!sub && pushPrefs.meet !== false;
+    const key = `reminders:${S.crew.id}:${S.uid}`;
+    const done = lsGet(key, {});
+    const now = Date.now();
+    for (const m of S.meets) {
+      const want = on && (m.going || []).includes(S.uid) && m.when > now + 65 * 60000; // too close for an "in 1 hour" reminder
+      const sig = `${m.when}|${m.title}|${m.place?.label || ""}|${sub?.endpoint || ""}`;
+      if (want && done[m.id] !== sig) {
+        if (await remindApi({ op: "set", meet: m.id, when: m.when, title: m.title, place: m.place?.label || "", sub: JSON.stringify(sub) })) done[m.id] = sig;
+      } else if (!want && done[m.id]) {
+        if (await remindApi({ op: "unset", meet: m.id })) delete done[m.id];
+      }
+    }
+    for (const id of Object.keys(done)) if (!S.meets.some((m) => m.id === id)) { await remindApi({ op: "unset", meet: id }); delete done[id]; }
+    lsSet(key, done);
+  } finally { syncingReminders = false; }
+}
+
 /* ---------------- crew ---------------- */
 function renderCrew() {
+  renderFounders();
+  const maker = S.members.get(S.crew.ownerId)?.callsign;
+  $("#app-credit").textContent = maker ? `THE CREW app · built by ${S.crew.ownerId === S.uid ? "you" : maker} 🛠️` : "";
   renderHome();
   renderPush();
   const ul = $("#crew-list");
   const list = [...S.members.values()].sort((a, b) => (a.id === S.uid ? -1 : b.id === S.uid ? 1 : (b.updatedAt || 0) - (a.updatedAt || 0)));
   ul.replaceChildren(...list.map((m) => {
     const st = m.id === S.uid ? (S.ghost ? "ghost" : S.pos ? "live" : "off") : memberState(m);
-    const label = { live: "Live", stale: m.updatedAt ? fmtAgo(m.updatedAt) : "Away", ghost: "Ghost", off: m.updatedAt ? fmtAgo(m.updatedAt) : "Offline" }[st];
+    const label = { live: "Live", stale: m.updatedAt ? fmtAgo(m.updatedAt) : "Away", seen: fmtAgo(m.updatedAt), ghost: "Ghost", off: m.updatedAt ? fmtAgo(m.updatedAt) : "Offline" }[st];
     const dist = m.id !== S.uid && S.pos && ["live", "stale"].includes(st) ? fmtKm(haversine(S.pos, m)) + " away" : "";
+    const role = roleTag(m.id);
     return h("li", { onclick: () => openMember(m.id) }, avatar(m.id, m.callsign),
-      h("div", { class: "grow" }, h("div", { class: "n" }, m.id === S.uid ? `${m.callsign} (you)` : m.callsign),
+      h("div", { class: "grow" }, h("div", { class: "n" }, m.id === S.uid ? `${m.callsign} (you)` : m.callsign, role ? h("span", { class: "cls" }, role) : null),
         h("div", { class: "s" }, [m.car?.name, dist].filter(Boolean).join(" · ") || "No car added")),
       h("span", { class: `status ${st === "live" ? "live" : st === "ghost" ? "ghost" : ""}` }, label));
   }));
@@ -1987,21 +2729,22 @@ async function openMember(id) {
   const m = S.members.get(id);
   if (!m) return;
   const st = id === S.uid ? (S.ghost ? "ghost" : "live") : memberState(m);
-  const where = id === S.uid ? S.pos : ["live", "stale"].includes(st) ? m : null;
+  const where = id === S.uid ? S.pos : ["live", "stale", "seen"].includes(st) ? m : null;
   const body = $("#member-body");
   body.replaceChildren(
     h("div", { style: "display:flex;gap:12px;align-items:center;margin-bottom:12px" }, avatar(id, m.callsign),
       h("div", { class: "grow" }, h("div", { class: "car-name" }, m.callsign),
         h("div", { class: "s", style: "color:var(--muted)" },
-          st === "ghost" ? "Ghost mode" : st === "live" ? (m.speed > 1.5 ? `Driving · ${kmh(m.speed)} km/h` : "Live · stopped") : m.updatedAt ? `Last seen ${fmtAgo(m.updatedAt)}` : "Hasn't shared a location yet",
+          st === "ghost" ? "Ghost mode" : st === "live" ? (m.speed > 1.5 ? `Driving · ${kmh(m.speed)} km/h` : "Live · stopped") : m.updatedAt ? `Last seen ${fmtAgo(m.updatedAt)}${st === "seen" ? " (pin shows where)" : ""}` : "Hasn't shared a location yet",
           where && id !== S.uid && S.pos ? ` · ${fmtKm(haversine(S.pos, where))} away` : ""))),
     where && id !== S.uid ? h("div", { class: "btn-row", style: "margin-bottom:14px" },
       h("button", { class: "btn primary sm", onclick: () => { dlgMember.close(); setView("map"); S.map.flyTo([where.lat, where.lng], 15); } }, "Show on map"),
-      h("a", { class: "btn ghost sm", href: `https://www.google.com/maps/dir/?api=1&destination=${where.lat},${where.lng}`, target: "_blank", rel: "noopener" }, "Drive to them")) : null,
+      h("a", { class: "btn ghost sm", href: `https://www.google.com/maps/dir/?api=1&destination=${where.lat},${where.lng}`, target: "_blank", rel: "noopener" }, st === "seen" ? "Drive there" : "Drive to them")) : null,
     m.phone && id !== S.uid ? h("div", { class: "phone-row" },
       h("div", { class: "grow" }, h("div", { class: "lbl" }, "Phone"), h("div", { class: "n", style: "margin-top:4px;user-select:all" }, m.phone)),
       h("a", { class: "btn ghost sm", href: `tel:${intlPhone(m.phone)}` }, "Call"),
       h("a", { class: "btn ghost sm", href: `https://wa.me/${intlPhone(m.phone).slice(1)}`, target: "_blank", rel: "noopener" }, "WhatsApp")) : null,
+    (() => { const got = BADGES.filter((b) => badgeEarned(b, id)); return got.length ? h("div", { class: "mini-badges" }, ...got.map((b) => h("span", { title: b.desc }, b.icon, " ", b.name))) : null; })(),
     h("div", { class: "lbl", style: "margin:4px 0 10px" }, "Garage"),
     h("div", { class: "cars", id: "member-cars" }, h("div", { class: "s", style: "color:var(--muted)" }, "Loading…")));
   dlgMember.showModal();
@@ -2012,6 +2755,6 @@ async function openMember(id) {
 }
 
 // refresh "x min ago" labels and stale markers
-setInterval(() => { if (S.crew) { renderLiveStrip(); renderMeetPins(); if (S.view === "convoy" && S.seg === "meets") renderMeets(); renderMembers(); if (S.view === "crew") renderCrew(); } }, 30000);
+setInterval(() => { if (S.crew) { checkDriveEnd(); renderLiveStrip(); renderMeetPins(); if (S.view === "convoy" && S.seg === "meets") renderMeets(); renderMembers(); if (S.view === "crew") renderCrew(); } }, 30000);
 
 boot();
