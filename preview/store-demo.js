@@ -18,10 +18,11 @@ export function createDemoStore() {
   const runStart = Date.now() - 4 * 60000;
   const now = Date.now();
   const members = {
-    ruan: { callsign: "Ruan", phone: "082 555 0101", car: { name: "Golf 7 GTI", desc: "2016 VW Golf GTI Performance" }, ghost: false, stats: { cells: 1840, km: 612 } },
-    lize: { callsign: "Lize", phone: "072 555 0102", car: { name: "Rooi Gevaar", desc: "2019 VW Polo GTI" }, ghost: false, stats: { cells: 960, km: 344 } },
-    dewald: { callsign: "Dewald", phone: "083 555 0103", car: { name: "Big Grunt", desc: "2021 Ford Ranger Raptor" }, ghost: false, stats: { cells: 2410, km: 1290 } },
-    thabo: { callsign: "Thabo", phone: "061 555 0104", car: { name: "Pocket Rocket", desc: "2018 Ford Fiesta ST200" }, ghost: true, lat: null, lng: null, updatedAt: now - 600000, stats: { cells: 520, km: 180 } },
+    ruan: { callsign: "Ruan", phone: "082 555 0101", car: { name: "Golf 7 GTI", desc: "2016 VW Golf GTI Performance" }, ghost: false, stats: { cells: 1840, km: 612, drives: 31, night: 4, meets: 6, convoys: 2, mods: 3 } },
+    lize: { callsign: "Lize", phone: "072 555 0102", car: { name: "Rooi Gevaar", desc: "2019 VW Polo GTI" }, ghost: false, stats: { cells: 960, km: 344, drives: 12, meets: 4 } },
+    dewald: { callsign: "Dewald", phone: "083 555 0103", car: { name: "Big Grunt", desc: "2021 Ford Ranger Raptor" }, ghost: false, stats: { cells: 2410, km: 1290, drives: 44, night: 1, meets: 11, convoys: 7 } },
+    thabo: { callsign: "Thabo", phone: "061 555 0104", car: { name: "Pocket Rocket", desc: "2018 Ford Fiesta ST200" }, ghost: true, lat: null, lng: null, updatedAt: now - 600000, stats: { cells: 520, km: 180, drives: 14, meets: 3 } },
+    jaco: { callsign: "Jaco", phone: "076 555 0105", car: { name: "Silver Bullet", desc: "2015 BMW M135i" }, ghost: false, lat: -25.7545, lng: 28.1952, updatedAt: now - 5 * 3600000, stats: { cells: 700, km: 260, drives: 9, night: 2 } },
   };
   const vehicles = {
     me: [{ id: "v1", name: "Hellux", make: "Toyota", model: "Hilux single cab", year: "2007", colour: "White", engine: "V8", power: "", mods: ["Straight-through exhaust"], active: true, photo: "", log: [
@@ -35,6 +36,7 @@ export function createDemoStore() {
     ] }],
     lize: [{ id: "l1", name: "Rooi Gevaar", make: "VW", model: "Polo GTI", year: "2019", colour: "Red", engine: "2.0 TSI", power: "147", mods: ["Lowering springs"], active: true }],
     dewald: [{ id: "d1", name: "Big Grunt", make: "Ford", model: "Ranger Raptor", year: "2021", colour: "Grey", engine: "2.0 biturbo diesel", power: "157", mods: ["Rooftop tent", "Snorkel"], active: true }],
+    jaco: [{ id: "j1", name: "Silver Bullet", make: "BMW", model: "M135i", year: "2015", colour: "Silver", engine: "3.0 turbo straight-six", power: "235", mods: ["Downpipe", "Stage 2"], active: true }],
     thabo: [{ id: "t1", name: "Pocket Rocket", make: "Ford", model: "Fiesta ST200", year: "2018", colour: "Storm Grey", engine: "1.6 EcoBoost", power: "149", mods: ["Track pads"], active: true }],
   };
   let convoys = [{ id: "c1", name: "Sunday run to Hartbeespoort", dest: { lat: -25.7247, lng: 27.8486, label: "Dam wall" }, leaderId: "dewald", memberIds: ["dewald", "ruan"], active: true, createdAt: now - 1800000 }];
@@ -50,7 +52,29 @@ export function createDemoStore() {
     { id: "s2", uid: "thabo", kmh: 204, cls: "Track", car: "Pocket Rocket", method: "Dragy", venue: "Zwartkops", witnesses: ["ruan", "dewald"], createdAt: now - 30 * H },
     { id: "s3", uid: "dewald", kmh: 171, cls: "Drag strip", car: "Big Grunt", method: "GPS (auto)", venue: "Tarlton", witnesses: [], createdAt: now - 6 * H },
     { id: "s4", uid: "lize", kmh: 186, cls: "Track", car: "Rooi Gevaar", method: "GPS (auto)", venue: "Red Star Raceway", witnesses: ["thabo"], createdAt: now - 3 * H },
+  ], launch: [
+    { id: "q1", uid: "ruan", t100: 5.62, qm: 13.71, trap: 166, cls: "Drag strip", car: "Golf 7 GTI", venue: "Tarlton", witnesses: ["lize"], createdAt: now - 50 * H },
+    { id: "q2", uid: "jaco", t100: 4.94, qm: 13.02, trap: 178, cls: "Drag strip", car: "Silver Bullet", venue: "Tarlton", witnesses: ["ruan", "dewald"], createdAt: now - 49 * H },
+    { id: "q3", uid: "lize", t100: 6.81, qm: 14.88, trap: 152, cls: "Drag strip", car: "Rooi Gevaar", venue: "Tarlton", witnesses: [], createdAt: now - 7 * H },
+    { id: "q4", uid: "dewald", t100: 8.9, qm: null, trap: null, cls: "Airfield", car: "Big Grunt", venue: "Wonderboom airfield", witnesses: [], createdAt: now - 4 * H },
   ] };
+  const mon = (off) => { const t = new Date(); t.setDate(1); t.setMonth(t.getMonth() + off); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}`; };
+  let votes = [
+    { voter: "ruan", for: "jaco", month: mon(-1) }, { voter: "lize", for: "jaco", month: mon(-1) }, { voter: "dewald", for: "ruan", month: mon(-1) },
+    { voter: "ruan", for: "dewald", month: mon(0) }, { voter: "thabo", for: "dewald", month: mon(0) }, { voter: "jaco", for: "ruan", month: mon(0) },
+  ].map((v) => ({ id: `${v.month}_${v.voter}`, at: now, ...v }));
+  const voteSubs = new Set();
+  const emitVotes = () => voteSubs.forEach(([months, cb]) => cb(votes.filter((v) => months.includes(v.month)).map((v) => ({ ...v }))));
+  const M = 60000;
+  let chat = [
+    { id: "c1", uid: "dewald", name: "Dewald", text: "Who's keen for Hartbeespoort on Sunday? Breakfast at the dam 🍳", at: now - 26 * 60 * M },
+    { id: "c2", uid: "ruan", name: "Ruan", text: "In. Bringing the GTI, new Cup 2s need scrubbing in", at: now - 25 * 60 * M },
+    { id: "c3", uid: "lize", name: "Lize", text: "Ek is in! Can we leave a bit later, 07:30?", at: now - 3 * 60 * M },
+    { id: "c4", uid: "jaco", name: "Jaco", text: "Did 4.94 to 100 at Tarlton yesterday 🚀 check the board", at: now - 40 * M },
+    { id: "c5", uid: "ruan", name: "Ruan", text: "Ja ja, wait till I get the launch right 😂", at: now - 12 * M },
+  ];
+  const chatSubs = new Set();
+  const emitChat = () => { const l = [...chat].sort((a, b) => b.at - a.at).slice(0, 150).map((c) => ({ ...c })); chatSubs.forEach((cb) => cb(l)); };
 
   const media = new Map();
   const at = (days, hh, mm) => { const t = new Date(); t.setDate(t.getDate() + days); t.setHours(hh, mm, 0, 0); return t.getTime(); };
@@ -64,7 +88,7 @@ export function createDemoStore() {
     densify(r, 60).forEach((p) => explored.add(ghEncode(p.lat, p.lng)));
   const meetSubs = new Set();
   const emitMeets = () => { const l = meets.map((m) => ({ ...m, going: [...m.going] })); meetSubs.forEach((cb) => cb(l)); };
-  const subs = { members: new Set(), convoys: new Set(), vehicles: new Map(), boards: { bass: new Set(), speed: new Set() } };
+  const subs = { members: new Set(), convoys: new Set(), vehicles: new Map(), boards: { bass: new Set(), speed: new Set(), launch: new Set() } };
   const emitBoard = (c) => { const l = boards[c].map((b) => ({ ...b, witnesses: [...b.witnesses] })); subs.boards[c].forEach((cb) => cb(l)); };
   const emitMembers = () => { const l = Object.entries(members).map(([id, m]) => ({ id, ...m })); subs.members.forEach((cb) => cb(l)); };
   const emitConvoys = () => { const l = convoys.filter((c) => c.active).map((c) => ({ ...c, memberIds: [...c.memberIds] })); subs.convoys.forEach((cb) => cb(l)); };
@@ -112,6 +136,11 @@ export function createDemoStore() {
     deleteBoard: (_c, coll, id) => { boards[coll] = boards[coll].filter((x) => x.id !== id); emitBoard(coll); return ok(); },
     onVehicles: (u, cb) => { if (!subs.vehicles.has(u)) subs.vehicles.set(u, new Set()); subs.vehicles.get(u).add(cb); emitVehicles(u); return () => subs.vehicles.get(u).delete(cb); },
     getToken: () => ok("demo-token"),
+    onChat: (_c, cb) => { chatSubs.add(cb); emitChat(); return () => chatSubs.delete(cb); },
+    sendChat: (_c, data) => { const id = "c" + Date.now(); chat.push({ id, ...data }); emitChat(); return ok(id); },
+    deleteChat: (_c, id) => { chat = chat.filter((x) => x.id !== id); emitChat(); return ok(); },
+    onVotes: (_c, months, cb) => { const s = [months, cb]; voteSubs.add(s); emitVotes(); return () => voteSubs.delete(s); },
+    castVote: (_c, month, u, forUid) => { votes = votes.filter((v) => v.id !== `${month}_${u}`); votes.push({ id: `${month}_${u}`, month, voter: u, for: forUid, at: Date.now() }); emitVotes(); return ok(); },
     savePush: () => ok(), deletePush: () => ok(),
     onMeets: (_c, cb) => { meetSubs.add(cb); emitMeets(); return () => meetSubs.delete(cb); },
     createMeet: (_c, data) => { const id = "m" + Date.now(); meets.push({ id, ...data }); emitMeets(); return ok(id); },

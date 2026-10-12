@@ -11,7 +11,7 @@ export async function createFirebaseStore(config) {
   const {
     initializeFirestore, persistentLocalCache, doc, getDoc, setDoc, updateDoc,
     deleteDoc, collection, onSnapshot, query, where, getDocs, addDoc,
-    arrayUnion, arrayRemove,
+    arrayUnion, arrayRemove, orderBy, limit,
   } = await import(`${base}/firebase-firestore.js`);
 
   const app = initializeApp(config);
@@ -68,7 +68,16 @@ export async function createFirebaseStore(config) {
     savePush: (code, uid, data) => setDoc(doc(db, "crews", code, "push", uid), data, { merge: true }),
     deletePush: (code, uid) => deleteDoc(doc(db, "crews", code, "push", uid)),
 
-    // leaderboards: coll is "bass" or "speed"
+    // crew chat: newest 150 messages
+    onChat: (code, cb, err) => onSnapshot(query(collection(db, "crews", code, "chat"), orderBy("at", "desc"), limit(150)), (s) => cb(list(s)), err),
+    async sendChat(code, data) { const r = await addDoc(collection(db, "crews", code, "chat"), data); return r.id; },
+    deleteChat: (code, id) => deleteDoc(doc(db, "crews", code, "chat", id)),
+
+    // Car of the Month: one vote per person per month, doc id = month_uid
+    onVotes: (code, months, cb, err) => onSnapshot(query(collection(db, "crews", code, "votes"), where("month", "in", months)), (s) => cb(list(s)), err),
+    castVote: (code, month, uid, forUid) => setDoc(doc(db, "crews", code, "votes", `${month}_${uid}`), { month, voter: uid, for: forUid, at: Date.now() }),
+
+    // leaderboards: coll is "bass", "speed" or "launch"
     onBoard: (code, coll, cb, err) => onSnapshot(collection(db, "crews", code, coll), (s) => cb(list(s)), err),
     async addBoard(code, coll, data) { const r = await addDoc(collection(db, "crews", code, coll), data); return r.id; },
     witnessBoard: (code, coll, id, uid) => updateDoc(doc(db, "crews", code, coll, id), { witnesses: arrayUnion(uid) }),
