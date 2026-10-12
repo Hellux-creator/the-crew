@@ -409,3 +409,8 @@ select{font:inherit;color:var(--fg);background:var(--panel-2);border:1px solid v
 #crew-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .top-right{flex:none}
 .app-credit{margin:18px 0 4px;text-align:center;font:600 12px/1 var(--f-body);letter-spacing:.08em;text-transform:uppercase;color:color-mix(in srgb,var(--accent) 70%,var(--muted))}
+button.bdg{text-align:left;font:inherit;color:inherit;cursor:pointer}
+.bdg-who{font-size:11px;color:var(--accent);margin-top:2px}
+.bdg:not(.got) .bdg-who{color:var(--muted)}
+.badge-head{display:flex;gap:14px;align-items:center}
+.bdg-big{font-size:44px;line-height:1}
