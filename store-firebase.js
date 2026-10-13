@@ -73,6 +73,25 @@ export async function createFirebaseStore(config) {
     async sendChat(code, data) { const r = await addDoc(collection(db, "crews", code, "chat"), data); return r.id; },
     deleteChat: (code, id) => deleteDoc(doc(db, "crews", code, "chat", id)),
 
+    // remove & block (app founder only; the rules check that)
+    onBans: (code, cb, err) => onSnapshot(collection(db, "crews", code, "bans"), (s) => cb(list(s)), err),
+    async banMember(code, uid, data) {
+      const b = writeBatch(db);
+      b.set(doc(db, "crews", code, "bans", uid), data);
+      if (data.phoneKey) b.update(doc(db, "crews", code), { bannedPhones: arrayUnion(data.phoneKey) });
+      await b.commit();
+    },
+    async unbanMember(code, uid, key) {
+      const b = writeBatch(db);
+      b.delete(doc(db, "crews", code, "bans", uid));
+      if (key) b.update(doc(db, "crews", code), { bannedPhones: arrayRemove(key) });
+      await b.commit();
+    },
+    async removeMember(code, uid) {
+      const b = writeBatch(db);
+      for (const c of ["members", "push", "founders"]) b.delete(doc(db, "crews", code, c, uid));
+      await b.commit();
+    },
     // crew founders: one-use claim links made by whoever set the crew up
     onFounders: (code, cb, err) => onSnapshot(collection(db, "crews", code, "founders"), (s) => cb(list(s)), err),
     onFounderClaims: (code, cb, err) => onSnapshot(collection(db, "crews", code, "claims"), (s) => cb(list(s)), err),

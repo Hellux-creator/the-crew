@@ -430,3 +430,6 @@ button.bdg{text-align:left;font:inherit;color:inherit;cursor:pointer}
 .sos-pin .b{position:relative;background:#c62828;color:#fff;border:2px solid #fff;border-radius:999px;padding:4px 10px;font:800 14px/1 var(--f-display);text-transform:uppercase;white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.5)}
 .sos-types button[aria-pressed="true"]{background:var(--bad);border-color:var(--bad);color:#fff}
 .btn.sos-send{background:#c62828;color:#fff}
+.remove-box{display:flex;flex-direction:column;gap:8px;align-items:flex-start;border:1px dashed color-mix(in srgb,var(--bad) 50%,var(--line));border-radius:12px;padding:10px 12px;margin-bottom:14px}
+.remove-box .check{font-size:13px;color:var(--muted)}
+.cls.dev{color:#7fd4ff;border-color:color-mix(in srgb,#5cc8ff 60%,transparent);background:rgba(92,200,255,.08)}

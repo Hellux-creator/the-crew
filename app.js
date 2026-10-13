@@ -51,6 +51,7 @@ function memberState(m) {
 
 // Keep digits and a leading +; "0821234567" stays as typed, links convert it to +27.
 function cleanPhone(v) { const t = String(v || "").trim().replace(/[^\d+]/g, ""); return t.replace(/\D/g, "").length >= 9 ? t : ""; }
+const phoneKey = (p) => (p ? intlPhone(p).replace(/\D/g, "") : "");
 function intlPhone(p) { const d = String(p || "").replace(/[^\d+]/g, ""); if (d.startsWith("+")) return d; if (d.startsWith("00")) return "+" + d.slice(2); if (d.startsWith("0")) return "+27" + d.slice(1); return "+" + d; }
 
 /* ---------------- install screen ---------------- */
@@ -191,24 +192,31 @@ async function enterApp() {
   S.km = Number(lsGet(`km:${S.uid}`, 0)) || 0;
   renderHome(); renderHomeCircle();
 
-  await S.store.joinCrew(S.crew.id, S.uid, {
-    callsign: S.profile.callsign, phone: S.profile.phone || "", ghost: S.ghost,
-    ...(S.ghost ? { lat: null, lng: null, speed: null } : {}),
-  });
+  try {
+    await S.store.joinCrew(S.crew.id, S.uid, {
+      callsign: S.profile.callsign, phone: S.profile.phone || "", phoneKey: phoneKey(S.profile.phone), ghost: S.ghost,
+      ...(S.ghost ? { lat: null, lng: null, speed: null } : {}),
+    });
+  } catch (e) {
+    // blocked by the app founder (or the crew is gone): send them back to the crew screen
+    const name = S.crew.name;
+    teardown();
+    await S.store.saveProfile(S.uid, { crewId: null }).catch(() => {});
+    S.profile.crewId = null; S.crew = null;
+    showOnboard("crew");
+    obError(`You can't join ${name}. You were removed from this crew. Speak to whoever runs it.`);
+    return;
+  }
 
   S.unsubs.push(S.store.onMembers(S.crew.id, (list) => {
     S.members = new Map(list.map((m) => [m.id, m]));
-    if (!S.members.has(S.uid)) { // removed from crew by owner
-      toast("You're no longer in this crew.");
-      S.store.saveProfile(S.uid, { crewId: null }).then(() => { S.profile.crewId = null; route(); });
-      return;
-    }
+    if (!S.members.has(S.uid)) { kickedOut(); return; } // removed from crew by the app founder
     noteRuns(list);
     if (!S.statsMerged) { S.statsMerged = true; mergeStats(S.members.get(S.uid)?.stats); }
     setTimeout(applyDeepLink, 0);
     renderMembers(); renderConvoyOverlay(); renderLiveStrip(); renderSos(); followWatched(); renderActiveView();
     if (!S.didFit && !S.pos) { S.didFit = true; fitCrew(); }
-  }, () => toast("Lost connection to the crew. Retrying…")));
+  }, (e) => { if (e?.code === "permission-denied") kickedOut(); else toast("Lost connection to the crew. Retrying…"); }));
   S.unsubs.push(S.store.onMeets(S.crew.id, (list) => {
     S.meets = list.sort((a, b) => a.when - b.when);
     S.meetsLoaded = true;
@@ -238,6 +246,8 @@ async function enterApp() {
     if (S.view === "crew") renderCrew();
     if (S.view === "explore") renderBadges();
   }, () => {}));
+  bans = [];
+  if (S.crew.ownerId === S.uid) S.unsubs.push(S.store.onBans(S.crew.id, (list) => { bans = list; if (S.view === "crew") renderBans(); }, () => {}));
   if (S.crew.ownerId === S.uid) S.unsubs.push(S.store.onFounderClaims(S.crew.id, (list) => { founderClaims = list; if (S.view === "crew") renderFounders(); }, () => {}));
   S.unsubs.push(S.store.onVehicles(S.uid, (list) => {
     S.myVehicles = list;
@@ -2243,12 +2253,47 @@ function renderSos() {
       m.sos.lat != null ? h("button", { class: "btn ghost sm", onclick: () => { setView("map"); S.map.flyTo([m.sos.lat, m.sos.lng], 16); } }, "Show") : null));
 }
 
+/* ---------------- remove & block (app founder only) ---------------- */
+function kickedOut() {
+  if (!S.crew) return;
+  const name = S.crew.name;
+  teardown();
+  S.crew = null; S.profile.crewId = null;
+  S.store.saveProfile(S.uid, { crewId: null }).catch(() => {});
+  showOnboard("crew");
+  obError(`You were removed from ${name}.`);
+}
+let bans = [];
+async function removeMember(id, btn) {
+  const m = S.members.get(id);
+  if (!m) return;
+  if (btn.dataset.armed !== "1") { btn.dataset.armed = "1"; btn.textContent = `Tap again to remove ${m.callsign}`; setTimeout(() => { btn.dataset.armed = ""; btn.textContent = "Remove from crew"; }, 4000); return; }
+  const block = $("#in-block")?.checked;
+  try {
+    if (block) await S.store.banMember(S.crew.id, id, { name: m.callsign, phoneKey: m.phoneKey || phoneKey(m.phone), at: Date.now() });
+    await S.store.removeMember(S.crew.id, id);
+    dlgMember.close();
+    toast(block ? `${m.callsign} removed and blocked` : `${m.callsign} removed. They can rejoin with the invite code.`);
+  } catch { toast("Couldn't remove them. Check your signal and try again."); }
+}
+function renderBans() {
+  const box = $("#bans-box");
+  if (!box) return;
+  const owner = S.crew?.ownerId === S.uid;
+  box.hidden = !owner || !bans.length;
+  $("#bans-h").hidden = box.hidden;
+  if (box.hidden) return;
+  fill(box, h("ul", { class: "rows" }, ...bans.map((b) => h("li", {},
+    avatar(b.id, b.name), h("div", { class: "grow" }, h("div", { class: "n" }, b.name || "Someone"), h("div", { class: "s" }, `Blocked ${fmtAgo(b.at)}`)),
+    h("button", { class: "btn ghost sm", onclick: async () => { await S.store.unbanMember(S.crew.id, b.id, b.phoneKey); toast(`${b.name || "They"} can join again`); } }, "Unblock")))));
+}
+
 /* ---------------- crew founders ---------------- */
 // The app founder (whoever set the crew up) sends one-use links; opening one claims a founder spot.
 let founders = [], founderClaims = [];
 const MAX_FOUNDERS = 2;
 const isFounder = (uid) => founders.some((f) => f.id === uid);
-const roleTag = (uid) => (isFounder(uid) ? "Founder" : "");
+const roleTag = (uid) => (S.crew?.ownerId === uid ? "Developer" : isFounder(uid) ? "Founder" : "");
 const claimLink = (token) => `${location.origin}${location.pathname}?claim=${token}&crew=${S.crew.id}`;
 function renderFounders() {
   const box = $("#founders");
@@ -2800,6 +2845,7 @@ async function syncReminders() {
 /* ---------------- crew ---------------- */
 function renderCrew() {
   renderFounders();
+  renderBans();
   const maker = S.members.get(S.crew.ownerId)?.callsign;
   $("#app-credit").textContent = maker ? `THE CREW app · built by ${S.crew.ownerId === S.uid ? "you" : maker} 🛠️` : "";
   renderHome();
@@ -2812,7 +2858,7 @@ function renderCrew() {
     const dist = m.id !== S.uid && S.pos && ["live", "stale"].includes(st) ? fmtKm(haversine(S.pos, m)) + " away" : "";
     const role = roleTag(m.id);
     return h("li", { onclick: () => openMember(m.id) }, avatar(m.id, m.callsign),
-      h("div", { class: "grow" }, h("div", { class: "n" }, m.id === S.uid ? `${m.callsign} (you)` : m.callsign, role ? h("span", { class: "cls" }, role) : null),
+      h("div", { class: "grow" }, h("div", { class: "n" }, m.id === S.uid ? `${m.callsign} (you)` : m.callsign, role ? h("span", { class: `cls${role === "Developer" ? " dev" : ""}` }, role === "Developer" ? "🛠️ Developer" : role) : null),
         h("div", { class: "s" }, [m.car?.name, dist].filter(Boolean).join(" · ") || "No car added")),
       h("span", { class: `status ${st === "live" ? "live" : st === "ghost" ? "ghost" : ""}` }, label));
   }));
@@ -2832,7 +2878,7 @@ $("#form-me").addEventListener("submit", async (e) => {
   if (!phone) { toast("Enter a valid phone number"); return; }
   Object.assign(S.profile, { callsign: c, phone });
   await S.store.saveProfile(S.uid, { callsign: c, phone });
-  await S.store.updateMember(S.crew.id, S.uid, { callsign: c, phone });
+  await S.store.updateMember(S.crew.id, S.uid, { callsign: c, phone, phoneKey: phoneKey(phone) });
   toast("Saved");
 });
 $("#btn-leave").addEventListener("click", async (e) => {
@@ -2860,7 +2906,7 @@ async function openMember(id) {
   const body = $("#member-body");
   body.replaceChildren(
     h("div", { style: "display:flex;gap:12px;align-items:center;margin-bottom:12px" }, avatar(id, m.callsign),
-      h("div", { class: "grow" }, h("div", { class: "car-name" }, m.callsign),
+      h("div", { class: "grow" }, h("div", { class: "car-name" }, m.callsign, roleTag(id) ? h("span", { class: `cls${roleTag(id) === "Developer" ? " dev" : ""}`, style: "font-size:10px" }, roleTag(id) === "Developer" ? "🛠️ Developer" : roleTag(id)) : null),
         h("div", { class: "s", style: "color:var(--muted)" },
           st === "ghost" ? "Ghost mode" : st === "live" ? (m.speed > 1.5 ? `Driving · ${kmh(m.speed)} km/h` : "Live · stopped") : m.updatedAt ? `Last seen ${fmtAgo(m.updatedAt)}${st === "seen" ? " (pin shows where)" : ""}` : "Hasn't shared a location yet",
           where && id !== S.uid && S.pos ? ` · ${fmtKm(haversine(S.pos, where))} away` : ""))),
@@ -2872,6 +2918,9 @@ async function openMember(id) {
       h("a", { class: "btn ghost sm", href: `tel:${intlPhone(m.phone)}` }, "Call"),
       h("a", { class: "btn ghost sm", href: `https://wa.me/${intlPhone(m.phone).slice(1)}`, target: "_blank", rel: "noopener" }, "WhatsApp")) : null,
     (() => { const got = BADGES.filter((b) => badgeEarned(b, id)); return got.length ? h("div", { class: "mini-badges" }, ...got.map((b) => h("span", { title: b.desc }, b.icon, " ", b.name))) : null; })(),
+    S.crew.ownerId === S.uid && id !== S.uid ? h("div", { class: "remove-box" },
+      h("label", { class: "check" }, h("input", { type: "checkbox", id: "in-block", checked: true }), "Block from rejoining with the invite code"),
+      h("button", { class: "btn danger sm", onclick: (e) => removeMember(id, e.currentTarget) }, "Remove from crew")) : null,
     h("div", { class: "lbl", style: "margin:4px 0 10px" }, "Garage"),
     h("div", { class: "cars", id: "member-cars" }, h("div", { class: "s", style: "color:var(--muted)" }, "Loading…")));
   dlgMember.showModal();
