@@ -198,19 +198,32 @@ async function enterApp() {
       ...(S.ghost ? { lat: null, lng: null, speed: null } : {}),
     });
   } catch (e) {
-    // blocked by the app founder (or the crew is gone): send them back to the crew screen
-    const name = S.crew.name;
-    teardown();
-    await S.store.saveProfile(S.uid, { crewId: null }).catch(() => {});
-    S.profile.crewId = null; S.crew = null;
-    showOnboard("crew");
-    obError(`You can't join ${name}. You were removed from this crew. Speak to whoever runs it.`);
+    // Only send someone back to the crew screen when they really were removed. Anything else
+    // (no signal, a hiccup while the rules change) just retries, and never forgets their crew.
+    let removed = false;
+    if (S.crew.ownerId !== S.uid && e?.code === "permission-denied") {
+      const ban = await S.store.getMyBan(S.crew.id, S.uid).catch(() => null);
+      const crew = await S.store.getCrew(S.crew.id).catch(() => null);
+      removed = (!!ban && ban.blocked !== false) || !!crew?.bannedPhones?.includes(phoneKey(S.profile.phone));
+    }
+    if (removed) {
+      const name = S.crew.name;
+      teardown();
+      await S.store.saveProfile(S.uid, { crewId: null }).catch(() => {});
+      S.profile.crewId = null; S.crew = null;
+      showOnboard("crew");
+      obError(`You can't join ${name}. You were removed from this crew. Speak to whoever runs it.`);
+      return;
+    }
+    toast("Can't reach the crew right now. Retrying…");
+    setTimeout(() => { if (S.crew && S.uid) enterApp(); }, 6000);
     return;
   }
+  if (S.justJoined) S.store.clearMyRemoval(S.crew.id, S.uid).catch(() => {}); // rejoined after a removal without a block
 
   S.unsubs.push(S.store.onMembers(S.crew.id, (list) => {
     S.members = new Map(list.map((m) => [m.id, m]));
-    if (!S.members.has(S.uid)) { kickedOut(); return; } // removed from crew by the app founder
+    if (!S.members.has(S.uid)) { kickedOut(); return; } // maybe removed by the app founder (kickedOut checks)
     noteRuns(list);
     if (!S.statsMerged) { S.statsMerged = true; mergeStats(S.members.get(S.uid)?.stats); ensureMonth(); }
     setTimeout(applyDeepLink, 0);
@@ -2275,8 +2288,13 @@ function renderSos() {
 }
 
 /* ---------------- remove & block (app founder only) ---------------- */
-function kickedOut() {
-  if (!S.crew) return;
+async function kickedOut() {
+  if (!S.crew || S.kickCheck) return;
+  if (S.crew.ownerId === S.uid) return; // the crew owner can never be removed
+  S.kickCheck = true;
+  const ban = await S.store.getMyBan(S.crew.id, S.uid).catch(() => null);
+  S.kickCheck = false;
+  if (!ban || !S.crew) return; // not a real removal: ignore the blip
   const name = S.crew.name;
   teardown();
   S.crew = null; S.profile.crewId = null;
@@ -2290,8 +2308,10 @@ async function removeMember(id, btn) {
   if (!m) return;
   if (btn.dataset.armed !== "1") { btn.dataset.armed = "1"; btn.textContent = `Tap again to remove ${m.callsign}`; setTimeout(() => { btn.dataset.armed = ""; btn.textContent = "Remove from crew"; }, 4000); return; }
   const block = $("#in-block")?.checked;
+  const key = m.phoneKey || phoneKey(m.phone);
+  const myKey = phoneKey(S.profile.phone);
   try {
-    if (block) await S.store.banMember(S.crew.id, id, { name: m.callsign, phoneKey: m.phoneKey || phoneKey(m.phone), at: Date.now() });
+    await S.store.banMember(S.crew.id, id, { name: m.callsign, phoneKey: block && key && key !== myKey ? key : "", blocked: !!block, at: Date.now() });
     await S.store.removeMember(S.crew.id, id);
     dlgMember.close();
     toast(block ? `${m.callsign} removed and blocked` : `${m.callsign} removed. They can rejoin with the invite code.`);
@@ -2305,8 +2325,8 @@ function renderBans() {
   $("#bans-h").hidden = box.hidden;
   if (box.hidden) return;
   fill(box, h("ul", { class: "rows" }, ...bans.map((b) => h("li", {},
-    avatar(b.id, b.name), h("div", { class: "grow" }, h("div", { class: "n" }, b.name || "Someone"), h("div", { class: "s" }, `Blocked ${fmtAgo(b.at)}`)),
-    h("button", { class: "btn ghost sm", onclick: async () => { await S.store.unbanMember(S.crew.id, b.id, b.phoneKey); toast(`${b.name || "They"} can join again`); } }, "Unblock")))));
+    avatar(b.id, b.name), h("div", { class: "grow" }, h("div", { class: "n" }, b.name || "Someone"), h("div", { class: "s" }, `${b.blocked === false ? "Removed (can rejoin)" : "Removed and blocked"} · ${fmtAgo(b.at)}`)),
+    h("button", { class: "btn ghost sm", onclick: async () => { await S.store.unbanMember(S.crew.id, b.id, b.phoneKey); toast(b.blocked === false ? "Cleared" : `${b.name || "They"} can join again`); } }, b.blocked === false ? "Clear" : "Unblock")))));
 }
 
 /* ---------------- crew admins (app founder + crew founders) ---------------- */

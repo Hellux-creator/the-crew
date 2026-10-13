@@ -91,6 +91,8 @@ export async function createFirebaseStore(config) {
 
     // remove & block (app founder only; the rules check that)
     onBans: (code, cb, err) => onSnapshot(collection(db, "crews", code, "bans"), (s) => cb(list(s)), err),
+    async getMyBan(code, uid) { const s = await getDoc(doc(db, "crews", code, "bans", uid)); return s.exists() ? s.data() : null; },
+    clearMyRemoval: (code, uid) => deleteDoc(doc(db, "crews", code, "bans", uid)),
     async banMember(code, uid, data) {
       const b = writeBatch(db);
       b.set(doc(db, "crews", code, "bans", uid), data);

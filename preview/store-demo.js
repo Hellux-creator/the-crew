@@ -169,6 +169,8 @@ export function createDemoStore() {
     setMeetKey: (_c, m, k) => { meetKeys[m] = k; return ok(); },
     onCheckins: (_c, cb) => { ciSubs.add(cb); emitCi(); return () => ciSubs.delete(cb); },
     checkIn: (_c, m, u, k) => { if (meetKeys[m] !== k) return Promise.reject(new Error("bad code")); checkins = checkins.filter((x) => x.id !== `${m}_${u}`).concat([{ id: `${m}_${u}`, meet: m, uid: u, code: k, at: Date.now() }]); emitCi(); return ok(); },
+    getMyBan: () => ok(null),
+    clearMyRemoval: () => ok(),
     onBans: (_c, cb) => { bansSubs.add(cb); emitBans(); return () => bansSubs.delete(cb); },
     banMember: (_c, u, data) => { bans = bans.filter((b) => b.id !== u).concat([{ id: u, ...data }]); emitBans(); return ok(); },
     unbanMember: (_c, u) => { bans = bans.filter((b) => b.id !== u); emitBans(); return ok(); },
