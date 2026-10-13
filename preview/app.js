@@ -206,7 +206,7 @@ async function enterApp() {
     noteRuns(list);
     if (!S.statsMerged) { S.statsMerged = true; mergeStats(S.members.get(S.uid)?.stats); }
     setTimeout(applyDeepLink, 0);
-    renderMembers(); renderConvoyOverlay(); renderLiveStrip(); followWatched(); renderActiveView();
+    renderMembers(); renderConvoyOverlay(); renderLiveStrip(); renderSos(); followWatched(); renderActiveView();
     if (!S.didFit && !S.pos) { S.didFit = true; fitCrew(); }
   }, () => toast("Lost connection to the crew. Retrying…")));
   S.unsubs.push(S.store.onMeets(S.crew.id, (list) => {
@@ -595,6 +595,7 @@ function onFix(p) {
   launchFeed(fix, rawSpeed != null ? rawSpeed : fix.speed, derivedDt);
   driveFeed(fix, rawSpeed != null ? rawSpeed : fix.speed);
   meetPresence(fix);
+  sosFeed(fix);
   if (fix.acc < 50) {
     // Phones often report every 5–10 s, which at speed skips whole road squares.
     // Fill in the straight line between this reading and the last good one.
@@ -1995,6 +1996,7 @@ async function renderPush(force) {
       pref("record", "Someone takes #1 on a leaderboard"),
       pref("crew", "New members and new mods"),
       pref("chat", "Crew chat messages"),
+      h("p", { class: "fine" }, "🆘 Breakdown SOS alerts always come through."),
     ] : []),
     h("div", { class: "btn-row" },
       state === "off" ? h("button", { type: "button", class: "btn primary sm", onclick: turnOnPush }, "Turn on notifications")
@@ -2020,13 +2022,14 @@ function handleDeepLink(href) {
   let u;
   try { u = new URL(href || location.href); } catch { return; }
   const watch = u.searchParams.get("watch"), meet = u.searchParams.get("meet");
-  const chat = u.searchParams.get("chat"), board = u.searchParams.get("board"), member = u.searchParams.get("member");
+  const chat = u.searchParams.get("chat"), board = u.searchParams.get("board"), member = u.searchParams.get("member"), sos = u.searchParams.get("sos");
+  if (sos) S.pendingSos = sos;
   if (watch) S.pendingWatch = watch;
   if (meet) S.pendingMeet = meet;
   if (member) S.pendingMember = member;
   if (chat && S.crew) setView("chat");
   if (board && BOARDS[board] && S.crew) { if (board === "bass") setView("bass"); else { S.speedMode = board; lsSet("speedMode", board); setView("speed"); } }
-  if (watch || meet || chat || board || member) history.replaceState(null, "", location.pathname);
+  if (watch || meet || chat || board || member || sos) history.replaceState(null, "", location.pathname);
   applyDeepLink();
 }
 function applyDeepLink() {
@@ -2035,6 +2038,12 @@ function applyDeepLink() {
     const m = S.members.get(S.pendingWatch);
     if (m && isLiveRun(m)) { watchRun(m.id); S.pendingWatch = null; }
     else if (m && S.members.size && !m.run) { toast(`${m.callsign}'s run has already ended`); S.pendingWatch = null; }
+  }
+  if (S.pendingSos && S.members.has(S.pendingSos)) {
+    const m = S.members.get(S.pendingSos);
+    S.pendingSos = null;
+    setView("map");
+    if (activeSos(m) && m.sos.lat != null) S.map.flyTo([m.sos.lat, m.sos.lng], 16); else if (!activeSos(m)) toast(`${m.callsign} is sorted now 👍`);
   }
   if (S.pendingMember && S.members.has(S.pendingMember)) { openMember(S.pendingMember); S.pendingMember = null; }
   if (S.pendingMeet && S.meets.length) {
@@ -2138,6 +2147,101 @@ function openBadge(b) {
   dlgMember.showModal();
 }
 const STAT_UNIT = { km: "km driven", cells: "road tiles", drives: "drives", night: "night drives", meets: "meets", convoys: "convoys led", mods: "mods", launches: "launch runs" };
+
+/* ---------------- breakdown SOS ---------------- */
+// Lives on my own crew card as `sos`, so it works without new database rules.
+// It carries its own location, so the crew can find me even in ghost mode.
+const SOS_TYPES = [["breakdown", "🔧 Breakdown"], ["tyre", "🛞 Flat tyre"], ["fuel", "⛽ Out of fuel"], ["battery", "🔋 Flat battery"], ["accident", "💥 Accident"], ["stuck", "🪨 Stuck"], ["other", "🆘 Other"]];
+const SOS_MAX_MS = 6 * 3600000;
+const sosLabel = (t) => (SOS_TYPES.find(([k]) => k === t) || SOS_TYPES[6])[1];
+const activeSos = (m) => !!m?.sos?.at && Date.now() - m.sos.at < SOS_MAX_MS;
+let sosType = "breakdown", sosSentAt = 0;
+const dlgSos = $("#dlg-sos");
+function openSosDialog() {
+  if (activeSos(S.members.get(S.uid))) { toast("Your SOS is already out. Tap I'm sorted when you're okay."); return; }
+  sosType = "breakdown";
+  $("#in-sos-note").value = "";
+  renderSosTypes();
+  dlgSos.showModal();
+}
+function renderSosTypes() {
+  fill($("#sos-types"), ...SOS_TYPES.map(([k, label]) => h("button", { type: "button", "aria-pressed": String(sosType === k), onclick: () => { sosType = k; renderSosTypes(); } }, label)));
+}
+$("#btn-sos").addEventListener("click", openSosDialog);
+$("#btn-sos-cancel").addEventListener("click", () => dlgSos.close());
+$("#form-sos").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const pos = S.pos;
+  if (!pos) { toast("No GPS yet. Your SOS will still go out, but call someone with your location."); }
+  const note = $("#in-sos-note").value.trim().slice(0, 80);
+  const sos = { at: Date.now(), type: sosType, note, ...(pos ? { lat: +pos.lat.toFixed(5), lng: +pos.lng.toFixed(5), posAt: Date.now() } : {}) };
+  dlgSos.close();
+  try {
+    await S.store.updateMember(S.crew.id, S.uid, { sos, helping: null });
+  } catch { toast("Couldn't send. Check your signal, or phone someone."); return; }
+  sosSentAt = Date.now();
+  const where = pos ? `https://maps.google.com/?q=${pos.lat.toFixed(5)},${pos.lng.toFixed(5)}` : "location unknown";
+  notifyCrew("sos", { title: `🆘 ${S.profile.callsign} needs help`, body: `${sosLabel(sosType).replace(/^\S+ /, "")}${note ? ` · ${note}` : ""} · tap to see where`, url: `./?sos=${S.uid}`, tag: `sos-${S.uid}` });
+  S.store.sendChat(S.crew.id, { uid: S.uid, name: S.profile.callsign, text: `🆘 SOS: ${sosLabel(sosType).replace(/^\S+ /, "")}${note ? ` · ${note}` : ""}\n📍 ${where}`, at: Date.now() }).catch(() => {});
+  toast("SOS sent to the crew. Stay safe.");
+  renderSos();
+});
+// keep my SOS location fresh while it's active
+function sosFeed(fix) {
+  const me = S.members.get(S.uid);
+  if (!activeSos(me) || fix.acc > 80) return;
+  if (Date.now() - (me.sos.posAt || 0) < 20000) return;
+  S.store.updateMember(S.crew.id, S.uid, { sos: { ...me.sos, lat: +fix.lat.toFixed(5), lng: +fix.lng.toFixed(5), posAt: Date.now() } }).catch(() => {});
+}
+async function endSos() {
+  await S.store.updateMember(S.crew.id, S.uid, { sos: null }).catch(() => {});
+  S.store.sendChat(S.crew.id, { uid: S.uid, name: S.profile.callsign, text: "✅ I'm sorted, thanks crew. SOS cancelled.", at: Date.now() }).catch(() => {});
+  toast("SOS cancelled. Glad you're okay.");
+}
+async function setHelping(uid, on) {
+  await S.store.updateMember(S.crew.id, S.uid, { helping: on ? { uid, at: Date.now() } : null }).catch(() => {});
+  if (on) {
+    const m = S.members.get(uid);
+    S.store.sendChat(S.crew.id, { uid: S.uid, name: S.profile.callsign, text: `🚗 On my way to ${m?.callsign || "help"}${m?.sos?.lat && S.pos ? ` (${fmtKm(haversine(S.pos, { lat: m.sos.lat, lng: m.sos.lng }))} away)` : ""}`, at: Date.now() }).catch(() => {});
+    toast("Thanks! They can see you're coming.");
+  }
+}
+const helpersOf = (uid) => [...S.members.values()].filter((m) => m.id !== uid && m.helping?.uid === uid && Date.now() - m.helping.at < SOS_MAX_MS);
+function renderSos() {
+  const strip = $("#sos-strip");
+  if (!strip || !S.crew) return;
+  // pins
+  if (S.sosLayer) S.sosLayer.clearLayers(); else S.sosLayer = L.layerGroup().addTo(S.map);
+  const list = [...S.members.values()].filter(activeSos).sort((a, b) => b.sos.at - a.sos.at);
+  for (const m of list) {
+    if (m.sos.lat == null) continue;
+    L.marker([m.sos.lat, m.sos.lng], { icon: L.divIcon({ className: "", html: `<div class="sos-pin"><div class="ring"></div><div class="b">🆘 ${esc(m.id === S.uid ? "You" : m.callsign)}</div></div>`, iconSize: [0, 0] }), zIndexOffset: 2000 })
+      .on("click", () => { S.map.flyTo([m.sos.lat, m.sos.lng], 16); }).addTo(S.sosLayer);
+  }
+  $("#live-strip").classList.toggle("pushed", !!list.length);
+  if (!list.length) { strip.hidden = true; return; }
+  const m = list[0];
+  const mine = m.id === S.uid;
+  const helpers = helpersOf(m.id);
+  const coming = helpers.map((x) => x.id === S.uid ? "You" : x.callsign);
+  const dist = !mine && S.pos && m.sos.lat != null ? fmtKm(haversine(S.pos, { lat: m.sos.lat, lng: m.sos.lng })) : "";
+  const imHelping = S.members.get(S.uid)?.helping?.uid === m.id;
+  const ago = fmtAgo(m.sos.at);
+  strip.hidden = false;
+  fill(strip,
+    h("div", { class: "sos-top" }, h("span", { class: "sos-dot" }),
+      h("div", { class: "grow" },
+        h("b", {}, mine ? "Your SOS is out" : `${m.callsign} needs help`),
+        h("div", { class: "lv-where" }, [sosLabel(m.sos.type).replace(/^\S+ /, ""), m.sos.note, dist ? `${dist} away` : "", ago].filter(Boolean).join(" · ")),
+        h("div", { class: "lv-where", style: "color:var(--fg)" }, coming.length ? `🚗 Coming: ${coming.join(", ")}` : mine ? "Waiting for someone to respond…" : "Nobody's said they're coming yet"),
+        list.length > 1 ? h("div", { class: "lv-where" }, `+${list.length - 1} more SOS`) : null)),
+    h("div", { class: "btn-row" },
+      mine ? h("button", { class: "btn primary sm", onclick: endSos }, "I'm sorted") : null,
+      !mine ? h("button", { class: `btn ${imHelping ? "ghost" : "primary"} sm`, onclick: () => setHelping(m.id, !imHelping) }, imHelping ? "Not coming" : "I'm coming") : null,
+      !mine && m.phone ? h("a", { class: "btn ghost sm", href: `tel:${intlPhone(m.phone)}` }, "Call") : null,
+      !mine && m.sos.lat != null ? h("a", { class: "btn ghost sm", href: `https://www.google.com/maps/dir/?api=1&destination=${m.sos.lat},${m.sos.lng}`, target: "_blank", rel: "noopener" }, "Navigate") : null,
+      m.sos.lat != null ? h("button", { class: "btn ghost sm", onclick: () => { setView("map"); S.map.flyTo([m.sos.lat, m.sos.lng], 16); } }, "Show") : null));
+}
 
 /* ---------------- crew founders ---------------- */
 // The app founder (whoever set the crew up) sends one-use links; opening one claims a founder spot.
@@ -2778,6 +2882,6 @@ async function openMember(id) {
 }
 
 // refresh "x min ago" labels and stale markers
-setInterval(() => { if (S.crew) { checkDriveEnd(); renderLiveStrip(); renderMeetPins(); if (S.view === "convoy" && S.seg === "meets") renderMeets(); renderMembers(); if (S.view === "crew") renderCrew(); } }, 30000);
+setInterval(() => { if (S.crew) { checkDriveEnd(); renderLiveStrip(); renderSos(); renderMeetPins(); if (S.view === "convoy" && S.seg === "meets") renderMeets(); renderMembers(); if (S.view === "crew") renderCrew(); } }, 30000);
 
 boot();
