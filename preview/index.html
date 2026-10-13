@@ -170,6 +170,8 @@
     <p class="sub">Every road you drive lights up on your map. Cover new ground to climb the board.</p>
     <div class="stats" id="explore-stats"></div>
     <button id="btn-showfog" class="btn ghost wide">Show my revealed map</button>
+    <h3 class="h3">Crew ranking</h3>
+    <div id="ranking"></div>
     <h3 class="h3">Badges</h3>
     <div id="badges" class="badges"></div>
     <h3 class="h3" id="drives-h">Your drives</h3>
@@ -252,6 +254,10 @@
     </form>
   </section>
 
+  <section id="view-merch" class="view sheet" hidden>
+    <div id="merch-body"></div>
+  </section>
+
   <section id="view-crew" class="view sheet" hidden>
     <h2 class="h">Crew</h2>
     <div class="invite">
@@ -262,6 +268,7 @@
       <button id="btn-share" class="btn primary sm">Share</button>
     </div>
     <ul id="crew-list" class="crew-list"></ul>
+    <div class="card merch-card" id="merch-card"></div>
     <h3 class="h3" id="bans-h" hidden>Blocked</h3>
     <div class="card" id="bans-box" hidden></div>
     <h3 class="h3">Crew founders</h3>

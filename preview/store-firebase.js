@@ -73,6 +73,22 @@ export async function createFirebaseStore(config) {
     async sendChat(code, data) { const r = await addDoc(collection(db, "crews", code, "chat"), data); return r.id; },
     deleteChat: (code, id) => deleteDoc(doc(db, "crews", code, "chat", id)),
 
+    // crew merch: founders add items, crew orders (paid outside the app)
+    onMerch: (code, cb, err) => onSnapshot(collection(db, "crews", code, "merch"), (s) => cb(list(s)), err),
+    async saveMerch(code, id, data) { if (id) { await setDoc(doc(db, "crews", code, "merch", id), data, { merge: true }); return id; } const r = await addDoc(collection(db, "crews", code, "merch"), data); return r.id; },
+    deleteMerch: (code, id) => deleteDoc(doc(db, "crews", code, "merch", id)),
+    onMyOrders: (code, uid, cb, err) => onSnapshot(query(collection(db, "crews", code, "orders"), where("uid", "==", uid)), (s) => cb(list(s)), err),
+    onAllOrders: (code, cb, err) => onSnapshot(collection(db, "crews", code, "orders"), (s) => cb(list(s)), err),
+    async placeOrder(code, data) { const r = await addDoc(collection(db, "crews", code, "orders"), data); return r.id; },
+    setOrderStatus: (code, id, status) => updateDoc(doc(db, "crews", code, "orders", id), { status, statusAt: Date.now() }),
+    deleteOrder: (code, id) => deleteDoc(doc(db, "crews", code, "orders", id)),
+
+    // meet check-in: the host/founders hold the code; scanning it writes a check-in
+    async getMeetKey(code, meetId) { const s = await getDoc(doc(db, "crews", code, "meetkeys", meetId)); return s.exists() ? s.data().code : null; },
+    setMeetKey: (code, meetId, key) => setDoc(doc(db, "crews", code, "meetkeys", meetId), { code: key, at: Date.now() }),
+    onCheckins: (code, cb, err) => onSnapshot(collection(db, "crews", code, "checkins"), (s) => cb(list(s)), err),
+    checkIn: (code, meetId, uid, key) => setDoc(doc(db, "crews", code, "checkins", `${meetId}_${uid}`), { meet: meetId, uid, code: key, at: Date.now() }),
+
     // remove & block (app founder only; the rules check that)
     onBans: (code, cb, err) => onSnapshot(collection(db, "crews", code, "bans"), (s) => cb(list(s)), err),
     async banMember(code, uid, data) {

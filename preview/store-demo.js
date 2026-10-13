@@ -17,10 +17,11 @@ export function createDemoStore() {
   const tick = { ruan: 40, lize: 10, dewald: 0 };
   const runStart = Date.now() - 4 * 60000;
   const now = Date.now();
+  const mk = (off) => { const t = new Date(); t.setDate(1); t.setMonth(t.getMonth() + off); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}`; };
   const members = {
-    ruan: { callsign: "Ruan", phone: "082 555 0101", car: { name: "Golf 7 GTI", desc: "2016 VW Golf GTI Performance" }, ghost: false, stats: { cells: 1840, km: 612, drives: 31, night: 4, meets: 6, convoys: 2, mods: 3 } },
-    lize: { callsign: "Lize", phone: "072 555 0102", car: { name: "Rooi Gevaar", desc: "2019 VW Polo GTI" }, ghost: false, stats: { cells: 960, km: 344, drives: 12, meets: 4 } },
-    dewald: { callsign: "Dewald", phone: "083 555 0103", car: { name: "Big Grunt", desc: "2021 Ford Ranger Raptor" }, ghost: false, stats: { cells: 2410, km: 1290, drives: 44, night: 1, meets: 11, convoys: 7 } },
+    ruan: { callsign: "Ruan", phone: "082 555 0101", car: { name: "Golf 7 GTI", desc: "2016 VW Golf GTI Performance" }, ghost: false, stats: { cells: 1840, km: 612, drives: 31, night: 4, meets: 6, convoys: 2, mods: 3 }, month: { key: mk(0), base: { cells: 1500, km: 420, drives: 24, meets: 4, convoys: 2, mods: 2 } }, lastMonth: { key: mk(-1), pts: 286 } },
+    lize: { callsign: "Lize", phone: "072 555 0102", car: { name: "Rooi Gevaar", desc: "2019 VW Polo GTI" }, ghost: false, stats: { cells: 960, km: 344, drives: 12, meets: 4 }, month: { key: mk(0), base: { cells: 900, km: 300, drives: 10, meets: 3 } }, lastMonth: { key: mk(-1), pts: 154 } },
+    dewald: { callsign: "Dewald", phone: "083 555 0103", car: { name: "Big Grunt", desc: "2021 Ford Ranger Raptor" }, ghost: false, stats: { cells: 2410, km: 1290, drives: 44, night: 1, meets: 11, convoys: 7 }, month: { key: mk(0), base: { cells: 2300, km: 1100, drives: 40, meets: 10, convoys: 6 } }, lastMonth: { key: mk(-1), pts: 431 } },
     thabo: { callsign: "Thabo", phone: "061 555 0104", car: { name: "Pocket Rocket", desc: "2018 Ford Fiesta ST200" }, ghost: true, lat: null, lng: null, updatedAt: now - 600000, stats: { cells: 520, km: 180, drives: 14, meets: 3 } },
     jaco: { callsign: "Jaco", phone: "076 555 0105", car: { name: "Silver Bullet", desc: "2015 BMW M135i" }, ghost: false, lat: -25.7545, lng: 28.1952, updatedAt: now - 5 * 3600000, stats: { cells: 700, km: 260, drives: 9, night: 2 } },
   };
@@ -61,6 +62,21 @@ export function createDemoStore() {
   ] };
   let founders = [{ id: "dewald", token: "x", at: now - 40 * 86400000 }];
   let claims = [{ id: "demo-link-1", createdAt: now - 3600000, note: "For Ruan" }];
+  const tee = (bg, fg, label) => "data:image/svg+xml," + encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 300'><rect width='400' height='300' fill='${bg}'/><path d='M140 70 L110 80 L70 120 L100 150 L120 135 L120 250 L280 250 L280 135 L300 150 L330 120 L290 80 L260 70 Q200 105 140 70Z' fill='${fg}'/><text x='200' y='190' font-family='Arial Black,Arial' font-weight='900' font-size='26' text-anchor='middle' fill='${bg}'>${label}</text></svg>`);
+  let merch = [
+    { id: "mi1", name: "Crew tee (black)", price: 280, sizes: ["S", "M", "L", "XL", "2XL"], desc: "Heavy cotton, THE CREW logo on the back.", pay: "EFT to Dewald, use your name as reference", photo: tee("#1c2430", "#ffb020", "THE CREW"), active: true, createdAt: now - 9 * 86400000 },
+    { id: "mi2", name: "Windscreen banner", price: 150, sizes: [], desc: "Cut vinyl, 90 cm, white or amber.", pay: "Cash at the next meet", photo: "", active: true, createdAt: now - 5 * 86400000 },
+  ];
+  let orders = [
+    { id: "o1", uid: "ruan", name: "Ruan", item: "mi1", itemName: "Crew tee (black)", size: "L", qty: 2, price: 280, note: "", status: "paid", at: now - 2 * 86400000 },
+    { id: "o2", uid: "lize", name: "Lize", item: "mi2", itemName: "Windscreen banner", size: "", qty: 1, price: 150, note: "Amber please", status: "new", at: now - 3 * 3600000 },
+  ];
+  let checkins = [{ id: "m1_ruan", meet: "m1", uid: "ruan", code: "x", at: now }];
+  const meetKeys = {};
+  const merchSubs = new Set(), orderSubs = new Set(), ciSubs = new Set();
+  const emitMerch = () => merchSubs.forEach((cb) => cb(merch.map((x) => ({ ...x }))));
+  const emitOrders = () => orderSubs.forEach(([u, cb]) => cb(orders.filter((o) => !u || o.uid === u).map((x) => ({ ...x }))));
+  const emitCi = () => ciSubs.forEach((cb) => cb(checkins.map((x) => ({ ...x }))));
   const fSubs = new Set(), cSubs = new Set(), bansSubs = new Set();
   let bans = [];
   const emitBans = () => bansSubs.forEach((cb) => cb(bans.map((x) => ({ ...x }))));
@@ -141,6 +157,18 @@ export function createDemoStore() {
     onChat: (_c, cb) => { chatSubs.add(cb); emitChat(); return () => chatSubs.delete(cb); },
     sendChat: (_c, data) => { const id = "c" + Date.now(); chat.push({ id, ...data }); emitChat(); return ok(id); },
     deleteChat: (_c, id) => { chat = chat.filter((x) => x.id !== id); emitChat(); return ok(); },
+    onMerch: (_c, cb) => { merchSubs.add(cb); emitMerch(); return () => merchSubs.delete(cb); },
+    saveMerch: (_c, id, data) => { if (id) { const i = merch.findIndex((x) => x.id === id); merch[i] = { ...merch[i], ...data }; } else { id = "mi" + Date.now(); merch.push({ id, ...data }); } emitMerch(); return ok(id); },
+    deleteMerch: (_c, id) => { merch = merch.filter((x) => x.id !== id); emitMerch(); return ok(); },
+    onMyOrders: (_c, u, cb) => { const s = [u, cb]; orderSubs.add(s); emitOrders(); return () => orderSubs.delete(s); },
+    onAllOrders: (_c, cb) => { const s = [null, cb]; orderSubs.add(s); emitOrders(); return () => orderSubs.delete(s); },
+    placeOrder: (_c, data) => { const id = "o" + Date.now(); orders.push({ id, ...data }); emitOrders(); return ok(id); },
+    setOrderStatus: (_c, id, status) => { const o = orders.find((x) => x.id === id); if (o) Object.assign(o, { status, statusAt: Date.now() }); emitOrders(); return ok(); },
+    deleteOrder: (_c, id) => { orders = orders.filter((x) => x.id !== id); emitOrders(); return ok(); },
+    getMeetKey: (_c, m) => ok(meetKeys[m] || null),
+    setMeetKey: (_c, m, k) => { meetKeys[m] = k; return ok(); },
+    onCheckins: (_c, cb) => { ciSubs.add(cb); emitCi(); return () => ciSubs.delete(cb); },
+    checkIn: (_c, m, u, k) => { if (meetKeys[m] !== k) return Promise.reject(new Error("bad code")); checkins = checkins.filter((x) => x.id !== `${m}_${u}`).concat([{ id: `${m}_${u}`, meet: m, uid: u, code: k, at: Date.now() }]); emitCi(); return ok(); },
     onBans: (_c, cb) => { bansSubs.add(cb); emitBans(); return () => bansSubs.delete(cb); },
     banMember: (_c, u, data) => { bans = bans.filter((b) => b.id !== u).concat([{ id: u, ...data }]); emitBans(); return ok(); },
     unbanMember: (_c, u) => { bans = bans.filter((b) => b.id !== u); emitBans(); return ok(); },
