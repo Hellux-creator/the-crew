@@ -433,3 +433,45 @@ button.bdg{text-align:left;font:inherit;color:inherit;cursor:pointer}
 .remove-box{display:flex;flex-direction:column;gap:8px;align-items:flex-start;border:1px dashed color-mix(in srgb,var(--bad) 50%,var(--line));border-radius:12px;padding:10px 12px;margin-bottom:14px}
 .remove-box .check{font-size:13px;color:var(--muted)}
 .cls.dev{color:#7fd4ff;border-color:color-mix(in srgb,#5cc8ff 60%,transparent);background:rgba(92,200,255,.08)}
+
+/* ---------- merch ---------- */
+.merch-card{display:flex;align-items:center;gap:12px;margin-top:12px}
+.merch-card .n{font:800 18px/1.1 var(--f-display);text-transform:uppercase;letter-spacing:.03em}
+.merch-card .s{color:var(--muted);font-size:13px}
+.merch-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
+.merch-item{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;padding:0;text-align:left;display:flex;flex-direction:column}
+.merch-item img,.merch-ph{width:100%;aspect-ratio:4/3;object-fit:cover;background:#0b0f15;display:grid;place-items:center;font-size:40px}
+.mi-body{padding:10px 12px 12px}
+.mi-body .n{font:800 17px/1.1 var(--f-display);text-transform:uppercase;letter-spacing:.02em}
+.mi-body .p{color:var(--accent);font:800 20px/1.2 var(--f-display);margin-top:4px}
+.mi-body .s{color:var(--muted);font-size:12px}
+.ostatus{font-size:11px;font-weight:700;border-radius:999px;padding:3px 8px;border:1px solid var(--line);white-space:nowrap;color:var(--muted)}
+.ostatus.new{color:#ffd78a;border-color:#7a5a12}
+.ostatus.paid{color:#7fd4ff;border-color:#2c6a8a}
+.ostatus.ready{color:var(--good);border-color:color-mix(in srgb,var(--good) 50%,transparent)}
+.rows li.done{opacity:.55}
+
+/* ---------- check-in ---------- */
+.checkin-box{margin-top:12px;background:var(--panel-2);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.checkin-box .n{font-weight:600}
+.qr-big{background:#fff;border-radius:14px;padding:10px;max-width:320px;margin:0 auto}
+.qr-big svg{display:block;width:100%;height:auto}
+.qr-code{text-align:center;font:500 32px/1.2 var(--f-mono);letter-spacing:.25em;color:var(--accent);margin-top:10px}
+.scan-wrap{position:relative;border-radius:14px;overflow:hidden;background:#000;margin:10px 0}
+.scan-video{display:block;width:100%;aspect-ratio:1/1;object-fit:cover}
+.scan-frame{position:absolute;inset:18%;border:3px solid var(--accent);border-radius:16px;box-shadow:0 0 0 999px rgba(0,0,0,.35)}
+
+/* ---------- ranking & MVP ---------- */
+.mvp-banner{display:flex;align-items:center;gap:12px;background:radial-gradient(120% 140% at 0% 0%,#3a2604 0%,var(--panel) 60%);border:1px solid #7a5a12;border-radius:var(--r);padding:12px 14px}
+.mvp-cup{font-size:36px}
+.mvp-banner .n{font:800 24px/1.1 var(--f-display);text-transform:uppercase;letter-spacing:.03em;margin-top:4px}
+.mvp-banner .s{color:var(--muted);font-size:13px}
+.rank-list{list-style:none;margin:0;padding:0}
+.rank-list li{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line);cursor:pointer}
+.rk{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font:800 15px/1 var(--f-display);color:var(--muted);flex:none}
+.rk.m1{background:radial-gradient(circle at 35% 30%,#fff2b0,#f5c400 45%,#b8860b);color:#1a1200}
+.rk.m2{background:radial-gradient(circle at 35% 30%,#fff,#c9d1da 45%,#8a96a3);color:#1a1200}
+.rk.m3{background:radial-gradient(circle at 35% 30%,#ffd2a8,#cd7f32 45%,#8a4f1d);color:#1a1200}
+.how-pts{margin-top:8px}
+.how-pts summary{color:var(--muted);font-size:13px;cursor:pointer;padding:6px 0}
+.cls.mvp{color:#ffd76a;border-color:#7a5a12;background:rgba(255,176,32,.1)}

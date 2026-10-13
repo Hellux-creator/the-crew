@@ -176,7 +176,7 @@ function teardown() {
 async function enterApp() {
   teardown();
   S.statsMerged = false; S.meetsLoaded = false;
-  chatMsgs = []; chatFirst = true; founders = []; founderClaims = [];
+  chatMsgs = []; chatFirst = true; founders = []; founderClaims = []; S.merchSubbed = false; merch = []; myOrders = []; allOrders = [];
   $("#onboard").hidden = true;
   $("#app").hidden = false;
   $("#demo-banner").hidden = !DEMO;
@@ -212,7 +212,7 @@ async function enterApp() {
     S.members = new Map(list.map((m) => [m.id, m]));
     if (!S.members.has(S.uid)) { kickedOut(); return; } // removed from crew by the app founder
     noteRuns(list);
-    if (!S.statsMerged) { S.statsMerged = true; mergeStats(S.members.get(S.uid)?.stats); }
+    if (!S.statsMerged) { S.statsMerged = true; mergeStats(S.members.get(S.uid)?.stats); ensureMonth(); }
     setTimeout(applyDeepLink, 0);
     renderMembers(); renderConvoyOverlay(); renderLiveStrip(); renderSos(); followWatched(); renderActiveView();
     if (!S.didFit && !S.pos) { S.didFit = true; fitCrew(); }
@@ -242,9 +242,17 @@ async function enterApp() {
   }));
   S.unsubs.push(S.store.onChat(S.crew.id, onChatList, () => {}));
   S.unsubs.push(S.store.onFounders(S.crew.id, (list) => {
+    const wasAdmin = isAdmin();
     founders = list;
+    if (!S.merchSubbed || wasAdmin !== isAdmin()) { S.merchSubbed = true; subscribeMerch(); }
     if (S.view === "crew") renderCrew();
     if (S.view === "explore") renderBadges();
+  }, () => {}));
+  checkins = [];
+  S.unsubs.push(S.store.onCheckins(S.crew.id, (l) => {
+    checkins = l;
+    if (dlgMeetView.open && S.openMeet) openMeetView(S.openMeet);
+    if (S.qrMeet && $("#qr-count")) $("#qr-count").textContent = `✅ ${checkinsFor(S.qrMeet).length} checked in`;
   }, () => {}));
   bans = [];
   if (S.crew.ownerId === S.uid) S.unsubs.push(S.store.onBans(S.crew.id, (list) => { bans = list; if (S.view === "crew") renderBans(); }, () => {}));
@@ -707,12 +715,13 @@ $("#btn-ghost").addEventListener("click", async () => {
 
 /* ---------------- views ---------------- */
 function setView(v) {
-  if (!["map", "convoy", "garage", "explore", "speed", "bass", "crew", "chat"].includes(v)) v = "map";
+  if (!["map", "convoy", "garage", "explore", "speed", "bass", "crew", "chat", "merch"].includes(v)) v = "map";
   if (S.view !== "chat") S.prevView = S.view;
-  S.view = v; if (v !== "chat") lsSet("view", v);
+  S.view = v; if (v !== "chat" && v !== "merch") lsSet("view", v);
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === v));
   $("#btn-chat").setAttribute("aria-pressed", String(v === "chat"));
-  for (const id of ["convoy", "garage", "explore", "speed", "bass", "crew", "chat"]) $(`#view-${id}`).hidden = id !== v;
+  for (const id of ["convoy", "garage", "explore", "speed", "bass", "crew", "chat", "merch"]) $(`#view-${id}`).hidden = id !== v;
+  if (v === "merch") document.querySelector('.tab[data-view="crew"]').classList.add("active");
   if (v === "map") setTimeout(() => S.map.invalidateSize(), 30);
   renderActiveView();
 }
@@ -725,6 +734,7 @@ function renderActiveView() {
   else if (S.view === "speed") { setSpeedMode(S.speedMode, true); renderLiveRunsCard(); }
   else if (S.view === "crew") renderCrew();
   else if (S.view === "chat") renderChat(true);
+  else if (S.view === "merch") renderMerch();
 }
 
 /* ---------------- convoy ---------------- */
@@ -975,6 +985,7 @@ $("#btn-meet-view-close").addEventListener("click", () => dlgMeetView.close());
 function openMeetView(id) {
   const m = S.meets.find((x) => x.id === id);
   if (!m) return;
+  S.openMeet = id;
   const going = (m.going || []).includes(S.uid), host = m.hostId === S.uid, d = new Date(m.when);
   const nav = m.place ? `${m.place.lat},${m.place.lng}` : "";
   $("#meet-view-body").replaceChildren(
@@ -984,6 +995,7 @@ function openMeetView(id) {
     m.notes ? h("p", { style: "margin:12px 0;white-space:pre-wrap" }, m.notes) : null,
     h("div", { class: "s", style: "color:var(--muted);margin-top:8px" }, `Posted by ${m.hostId === S.uid ? "you" : S.members.get(m.hostId)?.callsign || "a crew member"}`),
     goingRow(m),
+    checkinBlock(m),
     h("div", { class: "btn-row", style: "margin-top:14px" },
       h("button", { class: `btn ${going ? "ghost" : "primary"} sm`, onclick: async () => { await S.store.rsvpMeet(S.crew.id, m.id, S.uid, !going); toast(going ? "You're out" : pushPrefs.meet !== false && S.pushOn ? "You're in! We'll remind you an hour before." : "You're in!"); dlgMeetView.close(); setTimeout(syncReminders, 500); } }, going ? "Can't make it" : "I'm in"),
       ...(nav ? [
@@ -1480,6 +1492,7 @@ function syncActiveCar() {
 
 /* ---------------- explore ---------------- */
 function renderExplore() {
+  renderRanking();
   renderBadges();
   renderDrives();
   const area = (cells) => cells * cellAreaKm2(S.pos?.lat ?? -26);
@@ -2034,12 +2047,15 @@ function handleDeepLink(href) {
   const watch = u.searchParams.get("watch"), meet = u.searchParams.get("meet");
   const chat = u.searchParams.get("chat"), board = u.searchParams.get("board"), member = u.searchParams.get("member"), sos = u.searchParams.get("sos");
   if (sos) S.pendingSos = sos;
+  const ci = u.searchParams.get("checkin"), ck = u.searchParams.get("k"), ccrew = u.searchParams.get("crew");
+  if (ci && ck && !u.searchParams.get("claim")) S.pendingCheckin = { meet: ci, key: ck, crew: ccrew };
+  if (u.searchParams.get("merch") && S.crew) setView("merch");
   if (watch) S.pendingWatch = watch;
   if (meet) S.pendingMeet = meet;
   if (member) S.pendingMember = member;
   if (chat && S.crew) setView("chat");
   if (board && BOARDS[board] && S.crew) { if (board === "bass") setView("bass"); else { S.speedMode = board; lsSet("speedMode", board); setView("speed"); } }
-  if (watch || meet || chat || board || member || sos) history.replaceState(null, "", location.pathname);
+  if (watch || meet || chat || board || member || sos || ci || u.searchParams.get("merch")) history.replaceState(null, "", location.pathname);
   applyDeepLink();
 }
 function applyDeepLink() {
@@ -2056,6 +2072,10 @@ function applyDeepLink() {
     if (activeSos(m) && m.sos.lat != null) S.map.flyTo([m.sos.lat, m.sos.lng], 16); else if (!activeSos(m)) toast(`${m.callsign} is sorted now 👍`);
   }
   if (S.pendingMember && S.members.has(S.pendingMember)) { openMember(S.pendingMember); S.pendingMember = null; }
+  if (S.pendingCheckin && S.meets.length) {
+    const p = S.pendingCheckin; S.pendingCheckin = null;
+    if (p.crew && p.crew !== S.crew.id) toast("That check-in code is for a different crew."); else doCheckin(p.meet, p.key);
+  }
   if (S.pendingMeet && S.meets.length) {
     if (S.meets.some((x) => x.id === S.pendingMeet)) { setView("convoy"); setSeg("meets"); openMeetView(S.pendingMeet); }
     S.pendingMeet = null;
@@ -2107,6 +2127,7 @@ const BADGES = [
   { id: "mods5", icon: "🔧", name: "Gearhead", desc: "Log 5 mods in your mod log", stat: "mods", goal: 5 },
   { id: "launch", icon: "🚀", name: "Launch Control", desc: "Record a 0–100 run", stat: "launches", goal: 1 },
   { id: "record", icon: "🏆", name: "Record Holder", desc: "Hold #1 on any crew board right now", live: holdsRecord },
+  { id: "mvp", icon: "🏆", name: "Crew MVP", desc: "Top scorer in the crew last month", live: (uid) => isMvp(uid) },
   { id: "founder", icon: "⭐", name: "Crew Founder", desc: "One of the founders of this crew", live: (uid) => isFounder(uid) },
 ];
 const badgeEarned = (b, uid) => (b.live ? !!b.live(uid) : (statsFor(uid)[b.stat] || 0) >= b.goal);
@@ -2288,12 +2309,303 @@ function renderBans() {
     h("button", { class: "btn ghost sm", onclick: async () => { await S.store.unbanMember(S.crew.id, b.id, b.phoneKey); toast(`${b.name || "They"} can join again`); } }, "Unblock")))));
 }
 
+/* ---------------- crew admins (app founder + crew founders) ---------------- */
+const isAdmin = (uid = S.uid) => S.crew?.ownerId === uid || isFounder(uid);
+const loadScript = (src) => new Promise((res, rej) => { if (document.querySelector(`script[src="${src}"]`)) return res(); const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = rej; document.head.append(s); });
+
+/* ---------------- crew merch ---------------- */
+let merch = [], myOrders = [], allOrders = [], merchSubs = [];
+const ORDER_FLOW = { new: ["paid", "Mark paid"], paid: ["ready", "Mark ready"], ready: ["collected", "Mark collected"] };
+const ORDER_LABEL = { new: "Waiting for payment", paid: "Paid", ready: "Ready to collect", collected: "Collected" };
+const fmtRand = (n) => "R" + Number(n || 0).toLocaleString("en-ZA");
+function subscribeMerch() {
+  merchSubs.forEach((u) => u()); merchSubs = [];
+  merchSubs.push(S.store.onMerch(S.crew.id, (l) => { merch = l.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)); if (S.view === "merch") renderMerch(); if (S.view === "crew") renderMerchCard(); }, () => {}));
+  merchSubs.push(S.store.onMyOrders(S.crew.id, S.uid, (l) => { myOrders = l.sort((a, b) => b.at - a.at); if (S.view === "merch") renderMerch(); }, () => {}));
+  if (isAdmin()) merchSubs.push(S.store.onAllOrders(S.crew.id, (l) => { allOrders = l.sort((a, b) => b.at - a.at); if (S.view === "merch") renderMerch(); if (S.view === "crew") renderMerchCard(); }, () => {}));
+  S.unsubs.push(() => { merchSubs.forEach((u) => u()); merchSubs = []; });
+}
+function renderMerchCard() {
+  const box = $("#merch-card");
+  if (!box) return;
+  const open = isAdmin() ? allOrders.filter((o) => o.status !== "collected").length : 0;
+  fill(box,
+    h("div", { class: "grow" }, h("div", { class: "n" }, "🛍️ Crew merch"),
+      h("div", { class: "s" }, merch.length ? `${merch.length} item${merch.length === 1 ? "" : "s"} in the shop${open ? ` · ${open} open order${open === 1 ? "" : "s"}` : ""}` : isAdmin() ? "Add the first item to the shop" : "Nothing in the shop yet")),
+    h("button", { class: "btn primary sm", onclick: () => setView("merch") }, "Open shop"));
+}
+const statusChip = (s) => h("span", { class: `ostatus ${s}` }, ORDER_LABEL[s] || s);
+function renderMerch() {
+  const admin = isAdmin();
+  fill($("#merch-body"),
+    h("div", { class: "h-row" }, h("h2", { class: "h" }, "Crew merch"),
+      h("div", { class: "btn-row" }, admin ? h("button", { class: "btn primary sm", onclick: () => editMerch(null) }, "Add item") : null, h("button", { class: "btn ghost sm", onclick: () => setView("crew") }, "Close"))),
+    h("p", { class: "sub" }, admin ? "You and the crew founders run the shop. Orders come to you; payment happens outside the app (EFT or cash)." : "Order crew gear here. You pay the founders directly; they'll update your order as it moves along."),
+    merch.length ? h("div", { class: "merch-grid" }, ...merch.map((it) => h("button", { class: "merch-item", onclick: () => openMerchItem(it) },
+      it.photo ? h("img", { src: it.photo, alt: it.name }) : h("div", { class: "merch-ph" }, "🛍️"),
+      h("div", { class: "mi-body" }, h("div", { class: "n" }, it.name), h("div", { class: "p" }, fmtRand(it.price)), it.sizes?.length ? h("div", { class: "s" }, it.sizes.join(" · ")) : null)))) :
+      h("div", { class: "empty" }, h("div", { class: "big" }, "Shop's empty"), h("p", {}, admin ? "Tap Add item to put the first thing up." : "The founders haven't added anything yet.")),
+    myOrders.length ? h("h3", { class: "h3" }, "My orders") : null,
+    myOrders.length ? h("ul", { class: "rows" }, ...myOrders.map((o) => h("li", {},
+      h("div", { class: "grow" }, h("div", { class: "n" }, `${o.itemName}${o.size ? ` · ${o.size}` : ""} × ${o.qty}`), h("div", { class: "s" }, `${fmtRand(o.price * o.qty)} · ${fmtAgo(o.at)}${o.note ? ` · ${o.note}` : ""}`)),
+      statusChip(o.status),
+      o.status === "new" ? h("button", { class: "linkish", onclick: async () => { await S.store.deleteOrder(S.crew.id, o.id); toast("Order cancelled"); } }, "Cancel") : null))) : null,
+    admin ? h("h3", { class: "h3" }, `Orders to sort out${allOrders.filter((o) => o.status !== "collected").length ? ` (${allOrders.filter((o) => o.status !== "collected").length})` : ""}`) : null,
+    admin ? (allOrders.length ? h("ul", { class: "rows" }, ...allOrders.map((o) => h("li", { class: o.status === "collected" ? "done" : "" },
+      avatar(o.uid, o.name),
+      h("div", { class: "grow" }, h("div", { class: "n" }, `${o.name}: ${o.itemName}${o.size ? ` · ${o.size}` : ""} × ${o.qty}`),
+        h("div", { class: "s" }, `${fmtRand(o.price * o.qty)} · ${fmtAgo(o.at)}${o.note ? ` · "${o.note}"` : ""}`),
+        h("div", { class: "btn-row", style: "margin-top:6px" }, statusChip(o.status),
+          ORDER_FLOW[o.status] ? h("button", { class: "btn primary sm", onclick: () => moveOrder(o) }, ORDER_FLOW[o.status][1]) : null,
+          o.status !== "collected" ? h("button", { class: "linkish", onclick: async (e) => {
+            const b = e.currentTarget;
+            if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "tap again"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Cancel order"; }, 3000); return; }
+            await S.store.deleteOrder(S.crew.id, o.id); toast("Order cancelled");
+          } }, "Cancel order") : null))))) : h("p", { class: "fine", style: "font-size:14px" }, "No orders yet.")) : null);
+}
+async function moveOrder(o) {
+  const [next] = ORDER_FLOW[o.status];
+  await S.store.setOrderStatus(S.crew.id, o.id, next);
+  const msg = { paid: "✅ Payment received", ready: "📦 Your order is ready to collect", collected: "🙌 Order collected, enjoy" }[next];
+  notifyCrew("orderstatus", { to: o.uid, title: msg, body: `${o.itemName}${o.size ? ` · ${o.size}` : ""} × ${o.qty}`, url: "./?merch=1", tag: `order-${o.id}` });
+  toast(`${o.name}'s order: ${ORDER_LABEL[next].toLowerCase()}`);
+}
+function openMerchItem(it) {
+  const admin = isAdmin();
+  fill($("#member-body"),
+    it.photo ? h("img", { class: "photo-big", src: it.photo, alt: it.name, style: "margin-bottom:10px" }) : null,
+    h("div", { class: "car-name" }, it.name),
+    h("div", { class: "dbv", style: "color:var(--accent);margin:4px 0 8px" }, fmtRand(it.price)),
+    it.desc ? h("p", { style: "margin:0 0 8px;white-space:pre-wrap" }, it.desc) : null,
+    it.pay ? h("p", { class: "fine", style: "font-size:14px;margin-bottom:10px" }, `💳 How to pay: ${it.pay}`) : null,
+    h("form", { class: "stack", onsubmit: async (e) => {
+      e.preventDefault();
+      const f = e.target.elements;
+      const qty = Math.max(1, Math.min(20, parseInt(f.qty.value, 10) || 1));
+      const order = { uid: S.uid, name: S.profile.callsign, item: it.id, itemName: it.name, size: f.size ? f.size.value : "", qty, price: Number(it.price) || 0, note: f.note.value.trim().slice(0, 80), status: "new", at: Date.now() };
+      try {
+        const id = await S.store.placeOrder(S.crew.id, order);
+        dlgMember.close();
+        toast(`Order placed: ${it.name} × ${qty}. Pay ${fmtRand(order.price * qty)} as shown.`);
+        notifyCrew("order", { title: `🛍️ New order: ${it.name}`, body: `${S.profile.callsign} · ${order.size ? `${order.size} · ` : ""}× ${qty} · ${fmtRand(order.price * qty)}`, url: "./?merch=1", tag: `order-${id}` });
+      } catch { toast("Couldn't place the order. Try again."); }
+    } },
+      it.sizes?.length ? h("div", {}, h("label", { class: "lbl", for: "in-o-size" }, "Size"), h("select", { id: "in-o-size", name: "size" }, ...it.sizes.map((s) => h("option", {}, s)))) : null,
+      h("div", { class: "grid2" },
+        h("div", {}, h("label", { class: "lbl", for: "in-o-qty" }, "How many"), h("input", { id: "in-o-qty", name: "qty", type: "number", min: "1", max: "20", value: "1", inputmode: "numeric" })),
+        h("div", {}, h("label", { class: "lbl", for: "in-o-note" }, "Note"), h("input", { id: "in-o-note", name: "note", maxlength: "80", placeholder: "Optional" }))),
+      it.active === false ? h("p", { class: "fine" }, "Sold out for now.") : h("button", { class: "btn primary wide", type: "submit" }, "Place order")),
+    admin ? h("div", { class: "btn-row", style: "margin-top:12px" },
+      h("button", { class: "btn ghost sm", onclick: () => editMerch(it) }, "Edit item"),
+      h("button", { class: "btn ghost sm", onclick: async () => { await S.store.saveMerch(S.crew.id, it.id, { active: it.active === false }); dlgMember.close(); toast(it.active === false ? "Back in stock" : "Marked sold out"); } }, it.active === false ? "Back in stock" : "Mark sold out"),
+      h("button", { class: "btn danger sm", onclick: async (e) => {
+        const b = e.currentTarget;
+        if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Tap again to remove"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Remove item"; }, 3000); return; }
+        await S.store.deleteMerch(S.crew.id, it.id); dlgMember.close(); toast("Item removed");
+      } }, "Remove item")) : null);
+  if (!dlgMember.open) dlgMember.showModal();
+}
+function editMerch(it) {
+  let photo = it?.photo || "";
+  const prev = h("img", { class: "photo-big", alt: "", src: photo || "", ...(photo ? {} : { hidden: true }) });
+  fill($("#member-body"),
+    h("div", { class: "car-name", style: "margin-bottom:8px" }, it ? "Edit item" : "Add an item"),
+    h("form", { class: "stack", onsubmit: async (e) => {
+      e.preventDefault();
+      const f = e.target.elements;
+      const data = { name: f.name.value.trim().slice(0, 40), price: Math.max(0, Math.round(parseFloat(f.price.value.replace(/[^\d.]/g, "")) || 0)),
+        sizes: f.sizes.value.split(/[,/]/).map((s) => s.trim()).filter(Boolean).slice(0, 10), desc: f.desc.value.trim().slice(0, 300), pay: f.pay.value.trim().slice(0, 120), photo,
+        ...(it ? {} : { active: true, createdAt: Date.now(), createdBy: S.uid }) };
+      if (!data.name) { toast("Give it a name"); return; }
+      try { await S.store.saveMerch(S.crew.id, it?.id || null, data); dlgMember.close(); toast(it ? "Item updated" : "Item added to the shop"); }
+      catch { toast("Couldn't save. The photo might be too big; try another."); }
+    } },
+      prev,
+      h("label", { class: "btn ghost sm", style: "align-self:flex-start" }, "📷 Photo", h("input", { type: "file", accept: "image/*", hidden: true, onchange: async (e) => {
+        const file = e.target.files[0]; if (!file) return;
+        try { photo = await capSize(await shrinkImage(file, 1000, 0.8), 600000); prev.src = photo; prev.hidden = false; } catch { toast("Couldn't read that photo"); }
+      } })),
+      h("label", { class: "lbl", for: "in-m-name" }, "Name"), h("input", { id: "in-m-name", name: "name", maxlength: "40", value: it?.name || "", placeholder: "Crew tee (black)", required: true }),
+      h("div", { class: "grid2" },
+        h("div", {}, h("label", { class: "lbl", for: "in-m-price" }, "Price (R)"), h("input", { id: "in-m-price", name: "price", inputmode: "decimal", value: it?.price ?? "", placeholder: "280" })),
+        h("div", {}, h("label", { class: "lbl", for: "in-m-sizes" }, "Sizes"), h("input", { id: "in-m-sizes", name: "sizes", value: (it?.sizes || []).join(", "), placeholder: "S, M, L, XL (or leave empty)" }))),
+      h("label", { class: "lbl", for: "in-m-desc" }, "Description"), h("textarea", { id: "in-m-desc", name: "desc", rows: "2", maxlength: "300" }, it?.desc || ""),
+      h("label", { class: "lbl", for: "in-m-pay" }, "How to pay"), h("input", { id: "in-m-pay", name: "pay", maxlength: "120", value: it?.pay || "", placeholder: "EFT to Stiaan, ref = your name" }),
+      h("button", { class: "btn primary wide", type: "submit" }, it ? "Save" : "Add to shop")));
+  if (!dlgMember.open) dlgMember.showModal();
+}
+
+/* ---------------- QR check-in at meets ---------------- */
+let checkins = [];
+const checkinsFor = (meetId) => checkins.filter((c) => c.meet === meetId);
+const checkinWindow = (m) => Date.now() > m.when - 3 * 3600000 && Date.now() < m.when + 6 * 3600000;
+const randCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), (x) => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[x % 32]).join("");
+const checkinUrl = (m, key) => `${location.origin}${location.pathname}?checkin=${m.id}&k=${key}&crew=${S.crew.id}`;
+function checkinBlock(m) {
+  const list = checkinsFor(m.id), mine = list.some((c) => c.uid === S.uid);
+  const canShow = m.hostId === S.uid || isAdmin();
+  const open = checkinWindow(m);
+  if (!open && !list.length) return null;
+  return h("div", { class: "checkin-box" },
+    h("div", { class: "n" }, list.length ? `✅ ${list.length} checked in` : "Nobody's checked in yet"),
+    list.length ? h("div", { class: "going" }, ...list.slice(0, 8).map((c) => avatar(c.uid, c.uid === S.uid ? S.profile.callsign : S.members.get(c.uid)?.callsign))) : null,
+    open ? h("div", { class: "btn-row", style: "margin-top:8px" },
+      canShow ? h("button", { class: "btn primary sm", onclick: () => showCheckinQR(m) }, "Show check-in QR") : null,
+      !mine ? h("button", { class: `btn ${canShow ? "ghost" : "primary"} sm`, onclick: () => openScanner(m) }, "📷 Check in") : h("span", { class: "fine" }, "You're checked in ✅")) : null);
+}
+async function showCheckinQR(m) {
+  let key = await S.store.getMeetKey(S.crew.id, m.id).catch(() => null);
+  if (!key) { key = randCode(); await S.store.setMeetKey(S.crew.id, m.id, key); }
+  try { await loadScript("lib/qrcode.js"); } catch { toast("Couldn't load the QR maker. Check your signal."); return; }
+  const qr = window.qrcode(0, "M"); qr.addData(checkinUrl(m, key)); qr.make();
+  const box = h("div", { class: "qr-big" }); box.innerHTML = qr.createSvgTag({ cellSize: 8, margin: 2, scalable: true });
+  fill($("#member-body"),
+    h("div", { class: "car-name" }, `Check in · ${m.title}`),
+    h("p", { class: "fine", style: "font-size:14px;margin:4px 0 10px" }, "Let the crew scan this with THE CREW (Meets → the meet → Check in). Turn your screen brightness up."),
+    box,
+    h("div", { class: "qr-code" }, key),
+    h("p", { class: "fine", style: "text-align:center" }, "Camera not working? They can type this code instead."),
+    h("div", { class: "n", style: "text-align:center;margin-top:8px", id: "qr-count" }, `✅ ${checkinsFor(m.id).length} checked in`));
+  if (!dlgMember.open) dlgMember.showModal();
+  S.qrMeet = m.id;
+}
+let scanStream = null, scanTimer = null;
+function stopScan() { clearInterval(scanTimer); scanTimer = null; scanStream?.getTracks().forEach((t) => t.stop()); scanStream = null; }
+$("#dlg-member").addEventListener("close", () => { stopScan(); S.qrMeet = null; });
+async function openScanner(m) {
+  const video = h("video", { class: "scan-video", playsinline: true, muted: true, autoplay: true });
+  const status = h("p", { class: "fine", style: "text-align:center" }, "Point your camera at the check-in QR code.");
+  fill($("#member-body"),
+    h("div", { class: "car-name" }, `Check in · ${m.title}`),
+    h("div", { class: "scan-wrap" }, video, h("div", { class: "scan-frame" })),
+    status,
+    h("form", { class: "row-end", onsubmit: (e) => { e.preventDefault(); const k = e.target.elements.code.value.trim().toUpperCase(); if (k) doCheckin(m.id, k); } },
+      h("input", { name: "code", maxlength: "6", placeholder: "Or type the code", autocapitalize: "characters", style: "text-transform:uppercase" }),
+      h("button", { class: "btn primary sm", type: "submit", style: "flex:none" }, "Check in")));
+  if (!dlgMember.open) dlgMember.showModal();
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+    video.srcObject = scanStream; await video.play().catch(() => {});
+  } catch { status.textContent = "Camera blocked or not available. Type the code shown on the host's screen."; return; }
+  let detector = null;
+  if ("BarcodeDetector" in window) { try { detector = new window.BarcodeDetector({ formats: ["qr_code"] }); } catch {} }
+  if (!detector) { try { await loadScript("lib/jsQR.js"); } catch { status.textContent = "Couldn't load the scanner. Type the code instead."; return; } }
+  const cv = document.createElement("canvas"), ctx = cv.getContext("2d", { willReadFrequently: true });
+  let busy = false;
+  scanTimer = setInterval(async () => {
+    if (busy || !video.videoWidth) return;
+    busy = true;
+    try {
+      let text = null;
+      if (detector) { const r = await detector.detect(video); text = r[0]?.rawValue || null; }
+      else {
+        const w = Math.min(640, video.videoWidth), hh = Math.round(video.videoHeight * (w / video.videoWidth));
+        cv.width = w; cv.height = hh; ctx.drawImage(video, 0, 0, w, hh);
+        text = window.jsQR(ctx.getImageData(0, 0, w, hh).data, w, hh)?.data || null;
+      }
+      if (text) {
+        let u; try { u = new URL(text); } catch {}
+        const meet = u?.searchParams.get("checkin"), key = u?.searchParams.get("k"), crew = u?.searchParams.get("crew");
+        if (!meet || !key) status.textContent = "That's not a THE CREW check-in code.";
+        else if (crew !== S.crew.id) status.textContent = "That code is for a different crew.";
+        else { stopScan(); doCheckin(meet, key); }
+      }
+    } catch {}
+    busy = false;
+  }, 250);
+}
+async function doCheckin(meetId, key) {
+  const m = S.meets.find((x) => x.id === meetId);
+  if (!m) { toast("That meet isn't on the list any more."); return; }
+  if (S.pos && m.place && haversine(S.pos, m.place) > 3000) { toast(`You need to be at ${m.title} to check in.`); return; }
+  try {
+    await S.store.checkIn(S.crew.id, meetId, S.uid, key.toUpperCase());
+    if (!lsGet(`att:${meetId}`, false)) { lsSet(`att:${meetId}`, true); bumpStat("meets"); }
+    if (dlgMember.open) dlgMember.close();
+    toast(`✅ Checked in at ${m.title}`);
+    if (dlgMeetView.open) openMeetView(meetId);
+  } catch { toast("That code isn't right for this meet. Check it with the host."); }
+}
+
+/* ---------------- crew ranking & monthly MVP ---------------- */
+const monthKey = (off = 0) => { const t = new Date(); t.setDate(1); t.setMonth(t.getMonth() + off); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}`; };
+const monthName = (off = 0) => { const t = new Date(); t.setDate(1); t.setMonth(t.getMonth() + off); return ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][t.getMonth()]; };
+// what earns points
+const PTS = { meets: [25, "meet", "meets"], convoys: [20, "convoy led", "convoys led"], launches: [10, "launch run", "launch runs"], drives: [5, "drive", "drives"], mods: [10, "mod", "mods"], km: [0.1, "km", "km"], cells: [0.05, "road tile", "road tiles"] };
+const ptsFrom = (s, base = {}) => Object.entries(PTS).reduce((n, [k, [w]]) => n + Math.max(0, (s[k] || 0) - (base[k] || 0)) * w, 0);
+const snapStats = () => ({ ...myStats, cells: S.explored.size, km: Math.round(S.km) });
+function monthPts(uid) {
+  const m = S.members.get(uid);
+  const base = m?.month?.key === monthKey(0) ? m.month.base : null;
+  return base ? Math.round(ptsFrom(statsFor(uid), base)) : 0;
+}
+function lastMonthPts(uid) {
+  const m = S.members.get(uid), prev = monthKey(-1);
+  if (m?.lastMonth?.key === prev) return m.lastMonth.pts || 0;
+  if (m?.month?.key === prev) return Math.round(ptsFrom(statsFor(uid), m.month.base)); // hasn't opened the app since the month turned
+  return 0;
+}
+function mvpUids() {
+  const scores = [...S.members.keys()].map((id) => [id, lastMonthPts(id)]);
+  const top = Math.max(0, ...scores.map(([, p]) => p));
+  return new Set(top > 0 ? scores.filter(([, p]) => p === top).map(([id]) => id) : []);
+}
+const isMvp = (uid) => mvpUids().has(uid);
+function allTimePts(uid) {
+  const s = statsFor(uid);
+  const badges = BADGES.filter((b) => badgeEarned(b, uid)).length;
+  const records = Object.keys(BOARDS).filter((k) => boardLeader(k) === uid).length;
+  return { pts: Math.round(ptsFrom(s) + badges * 50 + records * 100), badges, records, s };
+}
+// first open in a new month: close last month's tally and start this one
+function ensureMonth() {
+  const me = S.members.get(S.uid);
+  if (!me || !S.statsMerged) return;
+  const cur = monthKey(0);
+  if (me.month?.key === cur) return;
+  const snap = snapStats();
+  const data = { month: { key: cur, base: snap } };
+  if (me.month?.key) data.lastMonth = { key: me.month.key, pts: Math.round(ptsFrom(snap, me.month.base)) };
+  S.store.updateMember(S.crew.id, S.uid, data).catch(() => {});
+}
+function renderRanking() {
+  const box = $("#ranking");
+  if (!box || !S.crew) return;
+  const mode = S.rankMode || "month";
+  const ids = [...S.members.keys()];
+  const rows = ids.map((id) => {
+    if (mode === "month") {
+      const m = S.members.get(id), base = m?.month?.key === monthKey(0) ? m.month.base : null, s = statsFor(id);
+      const parts = base ? Object.entries(PTS).map(([k, [, one, many]]) => [Math.round(Math.max(0, (s[k] || 0) - (base[k] || 0))), one, many]).filter(([n]) => n > 0) : [];
+      return { id, pts: monthPts(id), line: parts.length ? parts.slice(0, 3).map(([n, one, many]) => `+${n.toLocaleString("en-ZA")} ${n === 1 ? one : many}`).join(" · ") : "Nothing yet this month" };
+    }
+    const a = allTimePts(id);
+    return { id, pts: a.pts, line: [`${a.badges} badge${a.badges === 1 ? "" : "s"}`, a.records ? `${a.records} record${a.records === 1 ? "" : "s"}` : "", `${(a.s.meets || 0)} meets`, `${Math.round(a.s.km || 0).toLocaleString("en-ZA")} km`].filter(Boolean).join(" · ") };
+  }).sort((a, b) => b.pts - a.pts);
+  const mvps = [...mvpUids()];
+  const name = (id) => (id === S.uid ? `${S.profile.callsign} (you)` : S.members.get(id)?.callsign || "Ex-member");
+  fill(box,
+    mvps.length ? h("div", { class: "mvp-banner" }, h("span", { class: "mvp-cup" }, "🏆"),
+      h("div", { class: "grow" }, h("div", { class: "lbl" }, `${monthName(-1)} Crew MVP`), h("div", { class: "n" }, mvps.map(name).join(" & ")),
+        h("div", { class: "s" }, `${lastMonthPts(mvps[0])} points · wears the MVP tag all ${monthName(0)}`))) : null,
+    h("div", { class: "chips", style: "margin:10px 0" }, ...[["month", `${monthName(0)} (MVP race)`], ["all", "All time"]].map(([k, l]) => h("button", { "aria-pressed": String(mode === k), onclick: () => { S.rankMode = k; renderRanking(); } }, l))),
+    h("ol", { class: "rank-list" }, ...rows.map((r, i) => h("li", { onclick: () => openMember(r.id) },
+      h("span", { class: `rk${i < 3 && r.pts > 0 ? ` m${i + 1}` : ""}` }, String(i + 1)),
+      avatar(r.id, S.members.get(r.id)?.callsign),
+      h("div", { class: "grow" }, h("div", { class: "n" }, name(r.id), isMvp(r.id) ? " 🏆" : ""), h("div", { class: "s" }, r.line)),
+      h("div", { class: "num" }, h("span", { class: "dbv" }, r.pts.toLocaleString("en-ZA"), h("small", {}, "pts")))))),
+    h("details", { class: "how-pts" }, h("summary", {}, "How points work"),
+      h("p", { class: "fine" }, `Meet you turn up at or check in to: 25 · convoy you lead: 20 · launch run: 10 · mod logged: 10 · drive: 5 · every 10 km driven: 1 · every 20 new road tiles: 1. All time adds 50 per badge and 100 per crew record you hold. The month resets on the 1st; the top scorer becomes Crew MVP for the next month.`)));
+}
+
 /* ---------------- crew founders ---------------- */
 // The app founder (whoever set the crew up) sends one-use links; opening one claims a founder spot.
 let founders = [], founderClaims = [];
 const MAX_FOUNDERS = 2;
 const isFounder = (uid) => founders.some((f) => f.id === uid);
 const roleTag = (uid) => (S.crew?.ownerId === uid ? "Developer" : isFounder(uid) ? "Founder" : "");
+const tagEls = (uid, small) => [roleTag(uid) ? h("span", { class: `cls${roleTag(uid) === "Developer" ? " dev" : ""}`, style: small ? "font-size:10px" : null }, roleTag(uid) === "Developer" ? "🛠️ Developer" : roleTag(uid)) : null,
+  isMvp(uid) ? h("span", { class: "cls mvp", style: small ? "font-size:10px" : null }, "🏆 MVP") : null];
 const claimLink = (token) => `${location.origin}${location.pathname}?claim=${token}&crew=${S.crew.id}`;
 function renderFounders() {
   const box = $("#founders");
@@ -2844,6 +3156,7 @@ async function syncReminders() {
 
 /* ---------------- crew ---------------- */
 function renderCrew() {
+  renderMerchCard();
   renderFounders();
   renderBans();
   const maker = S.members.get(S.crew.ownerId)?.callsign;
@@ -2858,7 +3171,7 @@ function renderCrew() {
     const dist = m.id !== S.uid && S.pos && ["live", "stale"].includes(st) ? fmtKm(haversine(S.pos, m)) + " away" : "";
     const role = roleTag(m.id);
     return h("li", { onclick: () => openMember(m.id) }, avatar(m.id, m.callsign),
-      h("div", { class: "grow" }, h("div", { class: "n" }, m.id === S.uid ? `${m.callsign} (you)` : m.callsign, role ? h("span", { class: `cls${role === "Developer" ? " dev" : ""}` }, role === "Developer" ? "🛠️ Developer" : role) : null),
+      h("div", { class: "grow" }, h("div", { class: "n" }, m.id === S.uid ? `${m.callsign} (you)` : m.callsign, ...tagEls(m.id)),
         h("div", { class: "s" }, [m.car?.name, dist].filter(Boolean).join(" · ") || "No car added")),
       h("span", { class: `status ${st === "live" ? "live" : st === "ghost" ? "ghost" : ""}` }, label));
   }));
@@ -2906,7 +3219,7 @@ async function openMember(id) {
   const body = $("#member-body");
   body.replaceChildren(
     h("div", { style: "display:flex;gap:12px;align-items:center;margin-bottom:12px" }, avatar(id, m.callsign),
-      h("div", { class: "grow" }, h("div", { class: "car-name" }, m.callsign, roleTag(id) ? h("span", { class: `cls${roleTag(id) === "Developer" ? " dev" : ""}`, style: "font-size:10px" }, roleTag(id) === "Developer" ? "🛠️ Developer" : roleTag(id)) : null),
+      h("div", { class: "grow" }, h("div", { class: "car-name" }, m.callsign, ...tagEls(id, true)),
         h("div", { class: "s", style: "color:var(--muted)" },
           st === "ghost" ? "Ghost mode" : st === "live" ? (m.speed > 1.5 ? `Driving · ${kmh(m.speed)} km/h` : "Live · stopped") : m.updatedAt ? `Last seen ${fmtAgo(m.updatedAt)}${st === "seen" ? " (pin shows where)" : ""}` : "Hasn't shared a location yet",
           where && id !== S.uid && S.pos ? ` · ${fmtKm(haversine(S.pos, where))} away` : ""))),
