@@ -127,6 +127,7 @@
     <div id="map"></div>
     <div id="fog-stat" class="fog-stat" hidden></div>
     <div class="map-tools">
+      <button id="btn-sos" class="fab small sos-fab" title="Breakdown SOS: ask the crew for help">SOS</button>
       <button id="btn-theme" class="fab small" aria-label="Switch map between day and night"></button>
       <button id="btn-fog" class="fab small" aria-pressed="false" title="Drive to reveal: show the roads you've driven">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>
@@ -144,6 +145,7 @@
     </div>
     <div id="convoy-strip" class="convoy-strip" hidden></div>
     <div id="live-strip" class="live-strip" hidden></div>
+    <div id="sos-strip" class="sos-strip" hidden></div>
     <div id="gps-warn" class="gps-warn" hidden></div>
   </main>
 
@@ -450,6 +452,22 @@
 <dialog id="dlg-meet-view" class="dlg">
   <div id="meet-view-body"></div>
   <div class="row-end"><span class="spacer"></span><button id="btn-meet-view-close" class="btn ghost sm">Close</button></div>
+</dialog>
+
+<dialog id="dlg-sos" class="dlg">
+  <form id="form-sos" class="stack" method="dialog">
+    <div class="car-name" style="color:var(--bad)">🆘 Ask the crew for help</div>
+    <p class="fine" style="font-size:14px">Everyone in the crew gets a notification with your live location until you tap "I'm sorted". This shares where you are <b>even in ghost mode</b>.</p>
+    <div class="lbl">What's wrong?</div>
+    <div class="chips sos-types" id="sos-types"></div>
+    <label class="lbl" for="in-sos-note">Anything else? (optional)</label>
+    <input id="in-sos-note" maxlength="80" placeholder="e.g. On the N1 north, past the Zambezi offramp">
+    <p class="fine">In danger or hurt? Call 112 or 10111 first.</p>
+    <div class="btn-row">
+      <button class="btn sos-send" type="submit" id="btn-sos-send">Send SOS to the crew</button>
+      <button class="btn ghost" type="button" id="btn-sos-cancel">Cancel</button>
+    </div>
+  </form>
 </dialog>
 
 <dialog id="dlg-recap" class="dlg">
