@@ -61,7 +61,9 @@ export function createDemoStore() {
   ] };
   let founders = [{ id: "dewald", token: "x", at: now - 40 * 86400000 }];
   let claims = [{ id: "demo-link-1", createdAt: now - 3600000, note: "For Ruan" }];
-  const fSubs = new Set(), cSubs = new Set();
+  const fSubs = new Set(), cSubs = new Set(), bansSubs = new Set();
+  let bans = [];
+  const emitBans = () => bansSubs.forEach((cb) => cb(bans.map((x) => ({ ...x }))));
   const emitF = () => fSubs.forEach((cb) => cb(founders.map((x) => ({ ...x }))));
   const emitC = () => cSubs.forEach((cb) => cb(claims.map((x) => ({ ...x }))));
   const M = 60000;
@@ -101,6 +103,7 @@ export function createDemoStore() {
       Object.assign(members[k], { lat: a.lat, lng: a.lng, speed: k === "lize" ? 14 : 22, heading: Math.atan2(b.lng - a.lng, b.lat - a.lat) * 180 / Math.PI, updatedAt: Date.now() });
     }
     // Ruan: live speed run, speed rises and falls like laps of a track
+    if (!members.ruan) { emitMembers(); return; }
     const t = (Date.now() - runStart) / 1000;
     const v = 22 + 30 * Math.max(0, Math.sin(t / 6)) + 4 * Math.sin(t / 1.3);
     members.ruan.speed = +v.toFixed(1);
@@ -138,6 +141,10 @@ export function createDemoStore() {
     onChat: (_c, cb) => { chatSubs.add(cb); emitChat(); return () => chatSubs.delete(cb); },
     sendChat: (_c, data) => { const id = "c" + Date.now(); chat.push({ id, ...data }); emitChat(); return ok(id); },
     deleteChat: (_c, id) => { chat = chat.filter((x) => x.id !== id); emitChat(); return ok(); },
+    onBans: (_c, cb) => { bansSubs.add(cb); emitBans(); return () => bansSubs.delete(cb); },
+    banMember: (_c, u, data) => { bans = bans.filter((b) => b.id !== u).concat([{ id: u, ...data }]); emitBans(); return ok(); },
+    unbanMember: (_c, u) => { bans = bans.filter((b) => b.id !== u); emitBans(); return ok(); },
+    removeMember: (_c, u) => { delete members[u]; delete tick[u]; founders = founders.filter((x) => x.id !== u); emitMembers(); emitF(); return ok(); },
     onFounders: (_c, cb) => { fSubs.add(cb); emitF(); return () => fSubs.delete(cb); },
     onFounderClaims: (_c, cb) => { cSubs.add(cb); emitC(); return () => cSubs.delete(cb); },
     createFounderClaim: (_c, token, data) => { claims.push({ id: token, ...data }); emitC(); return ok(); },

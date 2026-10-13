@@ -19,7 +19,7 @@ service cloud.firestore {
       allow update, delete: if signedIn() && resource.data.ownerId == request.auth.uid;
       match /members/{uid} {
         allow read: if inCrew(c);
-        allow create, update: if isMe(uid) && exists(crewPath(c));
+        allow create, update: if isMe(uid) && exists(crewPath(c)) && !exists(/databases/$(database)/documents/crews/$(c)/bans/$(uid)) && !(request.resource.data.get('phoneKey', '-') in get(crewPath(c)).data.get('bannedPhones', []));
         allow delete: if isMe(uid) || (signedIn() && get(crewPath(c)).data.ownerId == request.auth.uid);
       }
       match /bass/{id} {
@@ -59,6 +59,10 @@ service cloud.firestore {
         allow read: if inCrew(c);
         allow create: if isMe(uid) && inCrew(c) && request.resource.data.token is string && exists(/databases/$(database)/documents/crews/$(c)/claims/$(request.resource.data.token)) && !existsAfter(/databases/$(database)/documents/crews/$(c)/claims/$(request.resource.data.token));
         allow delete: if signedIn() && get(crewPath(c)).data.ownerId == request.auth.uid;
+      }
+      match /bans/{uid} {
+        allow get: if isMe(uid) || (signedIn() && get(crewPath(c)).data.ownerId == request.auth.uid);
+        allow list, create, update, delete: if signedIn() && get(crewPath(c)).data.ownerId == request.auth.uid;
       }
       match /push/{uid} {
         allow read: if inCrew(c);
